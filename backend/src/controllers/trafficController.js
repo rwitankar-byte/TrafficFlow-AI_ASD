@@ -1,11 +1,11 @@
 const { calculateSignalTiming } = require('../algorithms/trafficDecision');
 
-// Default simulated current traffic
+// Simulated traffic conditions from project proposal (Section 3)
 const defaultTrafficData = {
-  north: 20,
-  south: 15,
-  east: 40,
-  west: 10
+  north: 80,  // High (35s)
+  south: 50,  // Medium (25s)
+  east: 15,   // Low (15s)
+  west: 100   // Very High (45s)
 };
 
 /**
@@ -22,12 +22,14 @@ const getCurrentTraffic = (req, res) => {
  * POST /api/traffic/decision (evaluates custom traffic passed in request body)
  */
 const getTrafficDecision = (req, res) => {
-  // Read traffic from body (POST), query parameters (GET), or fallback to current traffic
+  // Read traffic counts from body (POST), query parameters (GET), or default simulation
   const trafficData = {
     north: req.body?.north ?? req.query?.north ?? defaultTrafficData.north,
     south: req.body?.south ?? req.query?.south ?? defaultTrafficData.south,
     east: req.body?.east ?? req.query?.east ?? defaultTrafficData.east,
-    west: req.body?.west ?? req.query?.west ?? defaultTrafficData.west
+    west: req.body?.west ?? req.query?.west ?? defaultTrafficData.west,
+    emergencyDirection: req.body?.emergencyDirection ?? req.query?.emergencyDirection ?? req.body?.emergency ?? req.query?.emergency,
+    emergencyVehicleType: req.body?.emergencyVehicleType ?? req.query?.emergencyVehicleType
   };
 
   const decision = calculateSignalTiming(trafficData);
