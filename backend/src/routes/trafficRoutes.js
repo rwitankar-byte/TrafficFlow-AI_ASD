@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { getCurrentTraffic } = require('../controllers/trafficController');
+const { getCurrentTraffic, getTrafficDecision } = require('../controllers/trafficController');
 
-// GET /api/traffic/current
+// GET /api/traffic/current - get current traffic counts
 router.get('/current', getCurrentTraffic);
 
-module.exports = router;
+// GET & POST /api/traffic/decision - get signal timing decision
+router.get('/decision', getTrafficDecision);
+router.post('/decision', getTrafficDecision);
 
+module.exports = router;
