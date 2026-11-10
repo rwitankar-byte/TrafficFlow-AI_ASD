@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Car, Activity, Hospital as HospitalIcon } from 'lucide-react';
+import { Car, Activity, Hospital as HospitalIcon, Sliders, Award } from 'lucide-react';
 
 /**
  * ==============================================================================
@@ -21,8 +21,45 @@ const HOSPITAL = {
   y: 310,
 };
 
+// Default initial vehicle counts from project proposal
+const DEFAULT_VEHICLES = {
+  J1: 80,
+  J2: 50,
+  J3: 15,
+  J4: 100,
+};
+
+// 4-Tier Density Algorithm
+function getTierInfo(vehicleCount) {
+  const count = Number(vehicleCount) || 0;
+  if (count <= 19) {
+    return { name: 'Low', greenTime: 15, color: '#10b981', badge: 'bg-emerald-500/20 text-emerald-400' };
+  }
+  if (count <= 50) {
+    return { name: 'Medium', greenTime: 25, color: '#06b6d4', badge: 'bg-cyan-500/20 text-cyan-400' };
+  }
+  if (count <= 80) {
+    return { name: 'High', greenTime: 35, color: '#f59e0b', badge: 'bg-amber-500/20 text-amber-400' };
+  }
+  return { name: 'Very High', greenTime: 45, color: '#ef4444', badge: 'bg-rose-500/20 text-rose-400' };
+}
+
 export default function App() {
+  const [vehicles, setVehicles] = useState(DEFAULT_VEHICLES);
   const [selectedJunction, setSelectedJunction] = useState('J1');
+
+  // Requirement 2: Adjust vehicle counts
+  const handleVehicleChange = (junctionId, count) => {
+    const val = Math.max(0, Math.min(120, Number(count) || 0));
+    setVehicles((prev) => ({ ...prev, [junctionId]: val }));
+  };
+
+  const applyPreset = (presetName) => {
+    if (presetName === 'DEFAULT') setVehicles({ J1: 80, J2: 50, J3: 15, J4: 100 });
+    if (presetName === 'BALANCED') setVehicles({ J1: 40, J2: 40, J3: 40, J4: 40 });
+    if (presetName === 'LIGHT') setVehicles({ J1: 15, J2: 12, J3: 18, J4: 10 });
+    if (presetName === 'HEAVY') setVehicles({ J1: 95, J2: 85, J3: 90, J4: 110 });
+  };
 
   return (
     <div className="min-h-screen bg-[#070b14] text-slate-100 flex flex-col font-sans">
@@ -56,7 +93,7 @@ export default function App() {
               <Activity className="w-4 h-4 text-cyan-400" />
               <span>Interactive Traffic Map (4 Junctions)</span>
               <span className="text-xs font-normal text-slate-400">
-                (Click any junction to select)
+                (Click any junction to adjust vehicles)
               </span>
             </h2>
 
@@ -105,6 +142,8 @@ export default function App() {
               {/* REQUIREMENT 1: THE FOUR JUNCTIONS (J1, J2, J3, J4) */}
               {Object.values(JUNCTIONS).map((j) => {
                 const isSelected = selectedJunction === j.id;
+                const count = vehicles[j.id];
+                const tier = getTierInfo(count);
 
                 return (
                   <g
@@ -124,12 +163,18 @@ export default function App() {
                       strokeWidth={isSelected ? '3' : '1.5'}
                     />
 
-                    <text x="0" y="-10" textAnchor="middle" fill="#ffffff" fontSize="13" fontWeight="bold" fontFamily="monospace">
+                    <text x="0" y="-12" textAnchor="middle" fill="#ffffff" fontSize="13" fontWeight="bold" fontFamily="monospace">
                       {j.id}
                     </text>
 
+                    {/* Vehicle Count Badge */}
+                    <rect x="-26" y="-4" width="52" height="18" rx="4" fill="#020617" stroke="#334155" />
+                    <text x="0" y="9" textAnchor="middle" fill={tier.color} fontSize="10" fontWeight="bold" fontFamily="monospace">
+                      {count} veh
+                    </text>
+
                     {/* Signal Lights */}
-                    <g transform="translate(0, 16)">
+                    <g transform="translate(0, 22)">
                       <circle cx="-12" cy="0" r="4" fill="#ef4444" />
                       <circle cx="0" cy="0" r="4" fill="#451a03" />
                       <circle cx="12" cy="0" r="4" fill="#022c22" />
@@ -138,6 +183,121 @@ export default function App() {
                 );
               })}
             </svg>
+          </div>
+        </section>
+
+        {/* ============================================================== */}
+        {/* REQUIREMENT 2: VEHICLE MANAGEMENT CONTROLS                     */}
+        {/* ============================================================== */}
+        <section className="bg-[#091122] border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Sliders className="w-5 h-5 text-cyan-400" />
+                <span>Vehicle Management &amp; Controls</span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Adjust vehicle counts for the 4 junctions.
+              </p>
+            </div>
+
+            {/* Presets */}
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <button
+                onClick={() => applyPreset('DEFAULT')}
+                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700"
+              >
+                Default
+              </button>
+              <button
+                onClick={() => applyPreset('BALANCED')}
+                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700"
+              >
+                Balanced (40)
+              </button>
+              <button
+                onClick={() => applyPreset('HEAVY')}
+                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700"
+              >
+                Rush Hour
+              </button>
+            </div>
+          </div>
+
+          {/* Sliders for all 4 Junctions */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {Object.values(JUNCTIONS).map((j) => {
+              const count = vehicles[j.id];
+              const tier = getTierInfo(count);
+              const isSelected = selectedJunction === j.id;
+
+              return (
+                <div
+                  key={j.id}
+                  onClick={() => setSelectedJunction(j.id)}
+                  className={`p-3.5 rounded-xl border transition-all ${
+                    isSelected
+                      ? 'bg-slate-950 border-cyan-500/70 ring-1 ring-cyan-500/30'
+                      : 'bg-slate-950/60 border-slate-800'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <span className="font-bold text-white text-sm">{j.id}</span>
+                      <span className="text-[11px] text-slate-400 block">{j.label}</span>
+                    </div>
+                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${tier.badge}`}>
+                      {tier.name} ({tier.greenTime}s Green)
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min="0"
+                      max="120"
+                      value={count}
+                      onChange={(e) => handleVehicleChange(j.id, e.target.value)}
+                      className="flex-1 accent-cyan-400 cursor-pointer h-2 bg-slate-900 rounded-lg"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      max="120"
+                      value={count}
+                      onChange={(e) => handleVehicleChange(j.id, e.target.value)}
+                      className="w-16 px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center text-sm font-bold focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Viva Reference Summary */}
+        <section className="rounded-xl bg-[#091122]/70 border border-slate-800 p-4 text-xs text-slate-300">
+          <div className="flex items-center gap-2 font-bold text-white mb-2">
+            <Award className="w-4 h-4 text-cyan-400" />
+            <span>Viva Summary: 4-Tier Adaptive Timing Algorithm</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+            <div className="bg-slate-950/80 p-2 rounded border border-emerald-900/40 text-emerald-300">
+              <strong>Tier 1: Low (0-19)</strong>
+              <div>➔ 15s Green Light</div>
+            </div>
+            <div className="bg-slate-950/80 p-2 rounded border border-cyan-900/40 text-cyan-300">
+              <strong>Tier 2: Med (20-50)</strong>
+              <div>➔ 25s Green Light</div>
+            </div>
+            <div className="bg-slate-950/80 p-2 rounded border border-amber-900/40 text-amber-300">
+              <strong>Tier 3: High (51-80)</strong>
+              <div>➔ 35s Green Light</div>
+            </div>
+            <div className="bg-slate-950/80 p-2 rounded border border-rose-900/40 text-rose-300">
+              <strong>Tier 4: V.High (&gt;80)</strong>
+              <div>➔ 45s Green Light</div>
+            </div>
           </div>
         </section>
       </main>
