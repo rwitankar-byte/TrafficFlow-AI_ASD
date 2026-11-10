@@ -1,7 +1,8 @@
 /**
  * Traffic Signal Decision Algorithm
- * Evaluates traffic density at an intersection, classifies traffic into
- * 4 density tiers, and handles emergency vehicle priority overrides.
+ * Evaluates traffic density across junctions or directional lanes,
+ * classifies traffic into 4 density tiers, and handles emergency vehicle
+ * priority preemption and hospital green corridor pathfinding.
  */
 
 // 4-Tier Timing Constants based on project proposal
@@ -9,22 +10,26 @@ const TRAFFIC_TIERS = {
   LOW: {
     maxVehicles: 19,
     greenTime: 15,
-    label: 'Low'
+    name: 'Low',
+    level: 'LOW'
   },
   MEDIUM: {
     maxVehicles: 50,
     greenTime: 25,
-    label: 'Medium'
+    name: 'Medium',
+    level: 'MEDIUM'
   },
   HIGH: {
     maxVehicles: 80,
     greenTime: 35,
-    label: 'High'
+    name: 'High',
+    level: 'HIGH'
   },
   VERY_HIGH: {
-    maxVehicles: Infinity,
+    maxVehicles: 999,
     greenTime: 45,
-    label: 'Very high'
+    name: 'Very High',
+    level: 'VERY_HIGH'
   }
 };
 
@@ -37,40 +42,140 @@ const ALL_RED_TIME = 2;          // All-red clearance interval for intersection 
  * and returns its allocated green-light time.
  * 
  * @param {number} count - Number of vehicles detected
- * @returns {Object} { level: string, label: string, greenTime: number }
+ * @returns {Object} Tier information
  */
 function classifyTrafficTier(count) {
   const vehicleCount = Math.max(0, Number(count) || 0);
 
   if (vehicleCount <= TRAFFIC_TIERS.LOW.maxVehicles) {
-    return { level: 'LOW', label: TRAFFIC_TIERS.LOW.label, greenTime: TRAFFIC_TIERS.LOW.greenTime };
+    return { ...TRAFFIC_TIERS.LOW, vehicleCount };
   }
   if (vehicleCount <= TRAFFIC_TIERS.MEDIUM.maxVehicles) {
-    return { level: 'MEDIUM', label: TRAFFIC_TIERS.MEDIUM.label, greenTime: TRAFFIC_TIERS.MEDIUM.greenTime };
+    return { ...TRAFFIC_TIERS.MEDIUM, vehicleCount };
   }
   if (vehicleCount <= TRAFFIC_TIERS.HIGH.maxVehicles) {
-    return { level: 'HIGH', label: TRAFFIC_TIERS.HIGH.label, greenTime: TRAFFIC_TIERS.HIGH.greenTime };
+    return { ...TRAFFIC_TIERS.HIGH, vehicleCount };
   }
-  return { level: 'VERY_HIGH', label: TRAFFIC_TIERS.VERY_HIGH.label, greenTime: TRAFFIC_TIERS.VERY_HIGH.greenTime };
+  return { ...TRAFFIC_TIERS.VERY_HIGH, vehicleCount };
 }
 
 /**
- * Calculates dynamic signal timing for all directions and handles emergency vehicle preemption.
+ * Calculates optimal emergency path to City Hospital (connected to J4)
+ * @param {string} startJunction - 'J1', 'J2', 'J3', or 'J4'
+ * @returns {Array<string>} Shortest route of junctions to hospital
+ */
+function getHospitalCorridorPath(startJunction) {
+  const paths = {
+    J1: ['J1', 'J2', 'J4', 'HOSPITAL'],
+    J2: ['J2', 'J4', 'HOSPITAL'],
+    J3: ['J3', 'J4', 'HOSPITAL'],
+    J4: ['J4', 'HOSPITAL']
+  };
+  return paths[startJunction] || ['J4', 'HOSPITAL'];
+}
+
+/**
+ * Calculates multi-junction network signal decision (J1, J2, J3, J4)
+ * Used by the frontend live simulation.
  * 
- * @param {Object} trafficData
- * @param {number} [trafficData.north] - Vehicle count for North road
- * @param {number} [trafficData.south] - Vehicle count for South road
- * @param {number} [trafficData.east]  - Vehicle count for East road
- * @param {number} [trafficData.west]  - Vehicle count for West road
- * @param {string} [trafficData.emergencyDirection] - Direction of emergency vehicle ('NORTH', 'SOUTH', 'EAST', 'WEST', or null)
- * @param {string} [trafficData.emergencyVehicleType] - 'AMBULANCE' | 'FIRE_ENGINE' | null
- * 
- * @returns {Object} Signal timing decision and cycle schedule
+ * @param {Object} params
+ * @param {Object} params.vehicles - { J1: number, J2: number, J3: number, J4: number }
+ * @param {Object|null} params.ambulance - { junction: string, progress: number }
+ * @param {string} [params.currentGreen] - Currently active junction (if any)
+ * @param {boolean} [params.isNextCycle] - Whether rotating to next cycle after yellow
+ */
+function calculateNetworkDecision({ vehicles = {}, ambulance = null, currentGreen = null, isNextCycle = false }) {
+  const junctionIds = ['J1', 'J2', 'J3', 'J4'];
+
+  // Normalize vehicle counts & calculate 4-tier info for every junction
+  const junctionsAnalysis = {};
+  for (const jId of junctionIds) {
+    const count = Number(vehicles[jId] ?? vehicles[jId.toLowerCase()] ?? 0);
+    junctionsAnalysis[jId] = classifyTrafficTier(count);
+  }
+
+  // Handle Emergency Green Corridor
+  if (ambulance && ambulance.junction) {
+    const path = getHospitalCorridorPath(ambulance.junction);
+    const pathJunctions = path.filter(p => p !== 'HOSPITAL');
+
+    let targetGreen = ambulance.junction;
+
+    if (isNextCycle && currentGreen) {
+      const currentIndex = pathJunctions.indexOf(currentGreen);
+      targetGreen = pathJunctions[(currentIndex + 1) % pathJunctions.length] || 'J4';
+    }
+
+    return {
+      activeGreen: targetGreen,
+      greenDuration: EMERGENCY_GREEN_TIME,
+      isEmergency: true,
+      ambulance: {
+        active: true,
+        startJunction: ambulance.junction,
+        targetHospital: 'HOSPITAL',
+        corridorPath: path,
+        progress: ambulance.progress || 0
+      },
+      junctions: junctionsAnalysis,
+      message: `🚨 Emergency Green Corridor Active: Priority green assigned to ${targetGreen} for Ambulance route to City Hospital.`
+    };
+  }
+
+  // Normal Adaptive Decision
+  // Sort junctions by vehicle count descending (highest traffic gets priority)
+  const sorted = [...junctionIds].sort((a, b) => {
+    return junctionsAnalysis[b].vehicleCount - junctionsAnalysis[a].vehicleCount;
+  });
+
+  let selectedJunction = sorted[0];
+
+  // If rotating to next cycle, choose next highest junction excluding current
+  if (isNextCycle && currentGreen) {
+    const remaining = junctionIds.filter(j => j !== currentGreen);
+    selectedJunction = remaining.sort((a, b) => junctionsAnalysis[b].vehicleCount - junctionsAnalysis[a].vehicleCount)[0];
+  }
+
+  const tier = junctionsAnalysis[selectedJunction];
+
+  return {
+    activeGreen: selectedJunction,
+    greenDuration: tier.greenTime,
+    isEmergency: false,
+    ambulance: null,
+    tier: {
+      name: tier.name,
+      level: tier.level,
+      greenTime: tier.greenTime
+    },
+    cycleOrder: sorted,
+    junctions: junctionsAnalysis,
+    message: `⚡ Adaptive Decision: ${selectedJunction} selected (${tier.vehicleCount} cars, ${tier.name} Tier) -> ${tier.greenTime}s Green.`
+  };
+}
+
+/**
+ * Standard directional calculation (North, South, East, West)
  */
 function calculateSignalTiming(trafficData = {}) {
+  // Support both directional and J1-J4 data
+  if (trafficData.J1 !== undefined || trafficData.vehicles !== undefined) {
+    const vehicles = trafficData.vehicles || {
+      J1: trafficData.J1,
+      J2: trafficData.J2,
+      J3: trafficData.J3,
+      J4: trafficData.J4
+    };
+    return calculateNetworkDecision({
+      vehicles,
+      ambulance: trafficData.ambulance,
+      currentGreen: trafficData.currentGreen,
+      isNextCycle: Boolean(trafficData.isNextCycle)
+    });
+  }
+
   const directions = ['north', 'south', 'east', 'west'];
 
-  // 1. Process vehicle counts and assign 4-tier timing for each direction
   const directionsAnalysis = {};
   for (const dir of directions) {
     const vehicleCount = Math.max(0, Number(trafficData[dir]) || 0);
@@ -78,13 +183,12 @@ function calculateSignalTiming(trafficData = {}) {
 
     directionsAnalysis[dir] = {
       vehicleCount,
-      trafficLevel: tier.level,
-      label: tier.label,
+      trafficLevel: tier.name.toUpperCase().replace(' ', '_'),
+      label: tier.name,
       greenTime: tier.greenTime
     };
   }
 
-  // 2. Check for Emergency Vehicle Preemption
   const rawEmergencyDir = trafficData.emergencyDirection || trafficData.emergency || null;
   const normalizedEmergencyDir = rawEmergencyDir ? String(rawEmergencyDir).toLowerCase() : null;
   const isEmergencyValid = directions.includes(normalizedEmergencyDir);
@@ -96,8 +200,6 @@ function calculateSignalTiming(trafficData = {}) {
     overrideDuration: isEmergencyValid ? EMERGENCY_GREEN_TIME : 0
   };
 
-  // 3. Determine Priority & Cycle Ordering
-  // Sort directions: highest vehicle count gets served first
   const sortedDirections = [...directions].sort((a, b) => {
     return directionsAnalysis[b].vehicleCount - directionsAnalysis[a].vehicleCount;
   });
@@ -130,7 +232,9 @@ function calculateSignalTiming(trafficData = {}) {
 
 module.exports = {
   calculateSignalTiming,
+  calculateNetworkDecision,
   classifyTrafficTier,
+  getHospitalCorridorPath,
   TRAFFIC_TIERS,
   EMERGENCY_GREEN_TIME,
   YELLOW_TIME,

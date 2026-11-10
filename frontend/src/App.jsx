@@ -10,29 +10,26 @@ import {
   Activity, 
   Award,
   Sliders,
-  Hospital as HospitalIcon
+  Hospital as HospitalIcon,
+  Server
 } from 'lucide-react';
 
 /**
  * ==============================================================================
  * SMART TRAFFIC MANAGEMENT SYSTEM (4 JUNCTIONS + EMERGENCY GREEN CORRIDOR)
  * ==============================================================================
- * Designed for 3rd Year Capstone / Final Year Project.
- * Everything is in this single, clean file so you can easily understand,
- * modify, and explain it during your viva or presentation!
+ * Connected directly to Node.js/Express Backend API (http://localhost:3000)
  * 
- * CORE FEATURES:
- * 1. Interactive Traffic Map: 4 junctions (J1, J2, J3, J4) + roads in SVG
- * 2. Vehicle Management: Sliders to control vehicle counts at each junction
- * 3. Random Ambulance Placement: Button to spawn an ambulance at any random junction
- * 4. Hospital Location: Fixed City Hospital at (580, 310) next to Junction 4
- * 5. Live Monitoring: Begins once you click the "SUBMIT" button
+ * CORE ARCHITECTURE:
+ * 1. Frontend: Visual SVG Map, Sliders, Live Countdown, Ambulance Animation
+ * 2. Backend: 4-Tier Density Algorithm, Cycle Queueing, Hospital Pathfinding
+ * 3. Communication: Real-time REST API calls to /api/traffic/decision
  * ==============================================================================
  */
 
-// ==============================================================================
-// SECTION 1: MAP COORDINATES & CONFIGURATION
-// ==============================================================================
+const API_BASE_URL = 'http://localhost:3000/api/traffic';
+
+// Map Coordinates & Configuration
 const JUNCTIONS = {
   J1: { id: 'J1', name: 'Junction 1', label: 'North-West (Grand Ave)', x: 180, y: 130 },
   J2: { id: 'J2', name: 'Junction 2', label: 'North-East (Metro Blvd)', x: 420, y: 130 },
@@ -56,31 +53,24 @@ const DEFAULT_VEHICLES = {
   J4: 100,
 };
 
-// ==============================================================================
-// SECTION 2: 4-TIER ALGORITHM (Explain this in viva!)
-// ==============================================================================
-// Rule:
-// - Tier 1: Low (0 to 19 vehicles)       -> 15 seconds Green Light
-// - Tier 2: Medium (20 to 50 vehicles)   -> 25 seconds Green Light
-// - Tier 3: High (51 to 80 vehicles)     -> 35 seconds Green Light
-// - Tier 4: Very High (> 80 vehicles)    -> 45 seconds Green Light
-function getTierInfo(vehicleCount) {
-  const count = Number(vehicleCount) || 0;
-  if (count <= 19) {
-    return { name: 'Low', greenTime: 15, color: '#10b981', badge: 'bg-emerald-500/20 text-emerald-400' };
+/**
+ * Helper to call Backend Decision API (/api/traffic/decision)
+ */
+async function callBackendDecision(payload) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/decision`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.warn('Backend API unavailable on port 3000:', err.message);
+    return null;
   }
-  if (count <= 50) {
-    return { name: 'Medium', greenTime: 25, color: '#06b6d4', badge: 'bg-cyan-500/20 text-cyan-400' };
-  }
-  if (count <= 80) {
-    return { name: 'High', greenTime: 35, color: '#f59e0b', badge: 'bg-amber-500/20 text-amber-400' };
-  }
-  return { name: 'Very High', greenTime: 45, color: '#ef4444', badge: 'bg-rose-500/20 text-rose-400' };
 }
 
-// ==============================================================================
-// SECTION 3: MAIN APP COMPONENT
-// ==============================================================================
 export default function App() {
   // 1. Vehicle counts state for all 4 junctions
   const [vehicles, setVehicles] = useState(DEFAULT_VEHICLES);
@@ -100,16 +90,46 @@ export default function App() {
   const [signalColor, setSignalColor] = useState('GREEN'); // 'GREEN' | 'YELLOW'
   const [logs, setLogs] = useState([]);
 
+  // 6. Backend API Connection & Decision Data State
+  const [backendStatus, setBackendStatus] = useState('connecting'); // 'connected' | 'offline' | 'connecting'
+  const [backendData, setBackendData] = useState(null);
+
   // ============================================================================
-  // SECTION 4: USER ACTION HANDLERS
+  // FETCH LATEST ALGORITHM METRICS FROM BACKEND
   // ============================================================================
-  // Update vehicle count for a specific junction
+  useEffect(() => {
+    let isMounted = true;
+
+    async function syncWithBackend() {
+      const data = await callBackendDecision({
+        vehicles,
+        ambulance: ambulance ? { junction: ambulance.junction, progress: ambulance.progress } : null,
+        currentGreen: activeGreen,
+        isNextCycle: false
+      });
+
+      if (isMounted) {
+        if (data && data.status === 'success') {
+          setBackendStatus('connected');
+          setBackendData(data);
+        } else {
+          setBackendStatus('offline');
+        }
+      }
+    }
+
+    syncWithBackend();
+    return () => { isMounted = false; };
+  }, [vehicles, ambulance?.junction]);
+
+  // ============================================================================
+  // USER ACTION HANDLERS
+  // ============================================================================
   const handleVehicleChange = (junctionId, count) => {
     const val = Math.max(0, Math.min(120, Number(count) || 0));
     setVehicles((prev) => ({ ...prev, [junctionId]: val }));
   };
 
-  // Quick Preset buttons (light, balanced, heavy, proposal default)
   const applyPreset = (presetName) => {
     if (presetName === 'DEFAULT') setVehicles({ J1: 80, J2: 50, J3: 15, J4: 100 });
     if (presetName === 'BALANCED') setVehicles({ J1: 40, J2: 40, J3: 40, J4: 40 });
@@ -117,69 +137,80 @@ export default function App() {
     if (presetName === 'HEAVY') setVehicles({ J1: 95, J2: 85, J3: 90, J4: 110 });
   };
 
-  // Requirement 3: Add ambulance at a random location
-  const handleAddRandomAmbulance = () => {
+  // Add ambulance at a random location & fetch corridor route from backend
+  const handleAddRandomAmbulance = async () => {
     const startCandidates = ['J1', 'J2', 'J3'];
     const randomJunction = startCandidates[Math.floor(Math.random() * startCandidates.length)];
 
-    // Path to City Hospital (connected to J4)
-    let path = [];
-    if (randomJunction === 'J1') path = ['J1', 'J2', 'J4', 'HOSPITAL'];
-    else if (randomJunction === 'J2') path = ['J2', 'J4', 'HOSPITAL'];
-    else path = ['J3', 'J4', 'HOSPITAL'];
+    // Call backend API to calculate shortest route to hospital & emergency preemption
+    const decision = await callBackendDecision({
+      vehicles,
+      ambulance: { junction: randomJunction, progress: 0 },
+      isNextCycle: false
+    });
+
+    const path = decision?.ambulance?.corridorPath || (
+      randomJunction === 'J1' ? ['J1', 'J2', 'J4', 'HOSPITAL'] :
+      randomJunction === 'J2' ? ['J2', 'J4', 'HOSPITAL'] : ['J3', 'J4', 'HOSPITAL']
+    );
 
     setAmbulance({
       junction: randomJunction,
       path: path,
-      progress: 0, // 0% to 100% towards hospital
+      progress: 0,
     });
+
+    if (decision && decision.status === 'success') {
+      setBackendStatus('connected');
+      setBackendData(decision);
+    }
 
     // If live monitoring is running, give green light immediately to ambulance junction!
     if (isMonitoring) {
       setActiveGreen(randomJunction);
-      setCountdown(45);
+      setCountdown(decision?.greenDuration || 45);
       setSignalColor('GREEN');
-    }
-  };
-
-  // Clear ambulance
-  const handleClearAmbulance = () => {
-    setAmbulance(null);
-  };
-
-  // Requirement 5: "Once submitted, live monitoring will begin"
-  const handleToggleMonitoring = () => {
-    const nextMonitoring = !isMonitoring;
-    setIsMonitoring(nextMonitoring);
-
-    // If starting live monitoring now:
-    if (nextMonitoring) {
-      if (ambulance) {
-        // Priority to ambulance junction
-        setActiveGreen(ambulance.junction);
-        setCountdown(45);
-        setSignalColor('GREEN');
-        setLogs((prev) => [
-          `🚨 Emergency Green Corridor Active: Priority green assigned to ${ambulance.junction} for Ambulance to City Hospital.`,
-          ...prev,
-        ]);
-      } else {
-        // Priority to junction with highest vehicle count
-        const sorted = Object.entries(vehicles).sort((a, b) => b[1] - a[1]);
-        const highestJunction = sorted[0][0];
-        const tier = getTierInfo(vehicles[highestJunction]);
-
-        setActiveGreen(highestJunction);
-        setCountdown(tier.greenTime);
-        setSignalColor('GREEN');
-        setLogs([
-          `⚡ Live Monitoring Started: ${highestJunction} has highest traffic (${vehicles[highestJunction]} cars, ${tier.name} Tier) -> ${tier.greenTime}s Green.`,
-        ]);
+      if (decision?.message) {
+        setLogs((prev) => [decision.message, ...prev.slice(0, 9)]);
       }
     }
   };
 
-  // Reset entire simulation to defaults
+  const handleClearAmbulance = () => {
+    setAmbulance(null);
+  };
+
+  // Submit / Toggle Live Monitoring: delegates initial priority to backend
+  const handleToggleMonitoring = async () => {
+    const nextMonitoring = !isMonitoring;
+    setIsMonitoring(nextMonitoring);
+
+    if (nextMonitoring) {
+      // Call backend API to decide who gets green first
+      const decision = await callBackendDecision({
+        vehicles,
+        ambulance: ambulance ? { junction: ambulance.junction, progress: ambulance.progress } : null,
+        isNextCycle: false
+      });
+
+      if (decision && decision.activeGreen) {
+        setBackendStatus('connected');
+        setBackendData(decision);
+        setActiveGreen(decision.activeGreen);
+        setCountdown(decision.greenDuration);
+        setSignalColor('GREEN');
+        setLogs([decision.message]);
+      } else {
+        // Fallback if backend offline
+        const highestJunction = Object.entries(vehicles).sort((a, b) => b[1] - a[1])[0][0];
+        setActiveGreen(highestJunction);
+        setCountdown(45);
+        setSignalColor('GREEN');
+        setLogs([`⚡ Local Fallback: ${highestJunction} started.`]);
+      }
+    }
+  };
+
   const handleReset = () => {
     setIsMonitoring(false);
     setVehicles(DEFAULT_VEHICLES);
@@ -189,17 +220,17 @@ export default function App() {
   };
 
   // ============================================================================
-  // SECTION 5: REAL-TIME 1-SECOND SIMULATION LOOP
+  // REAL-TIME 1-SECOND SIMULATION LOOP (Backend-Driven Cycle Transitions)
   // ============================================================================
   useEffect(() => {
     if (!isMonitoring) return;
 
-    const timer = setInterval(() => {
+    const timer = setInterval(async () => {
       // 1. Advance ambulance progress if active
       if (ambulance) {
         setAmbulance((prev) => {
           if (!prev) return null;
-          if (prev.progress >= 100) return prev; // reached hospital
+          if (prev.progress >= 100) return prev;
           return { ...prev, progress: prev.progress + 2 };
         });
       }
@@ -208,41 +239,39 @@ export default function App() {
       setCountdown((prevCount) => {
         if (prevCount > 1) return prevCount - 1;
 
-        // When countdown reaches 1:
         if (signalColor === 'GREEN') {
-          // Switch to 3-second Yellow clearance
+          // Switch to safe 3-second Yellow clearance
           setSignalColor('YELLOW');
           return 3;
         } else {
-          // Yellow finished: switch green light to next junction!
+          // Yellow finished: request next signal phase from backend!
           setSignalColor('GREEN');
 
-          // If ambulance is active, cycle along its path
-          if (ambulance) {
-            const pathJunctions = ambulance.path.filter((p) => p !== 'HOSPITAL');
-            const currentIndex = pathJunctions.indexOf(activeGreen);
-            const nextJunction = pathJunctions[(currentIndex + 1) % pathJunctions.length] || 'J4';
+          // Trigger asynchronous backend rotation
+          (async () => {
+            const nextDecision = await callBackendDecision({
+              vehicles,
+              ambulance: ambulance ? { junction: ambulance.junction, progress: ambulance.progress } : null,
+              currentGreen: activeGreen,
+              isNextCycle: true
+            });
 
-            setActiveGreen(nextJunction);
-            setLogs((prev) => [
-              `🚨 Corridor Shift: Green light passed forward to ${nextJunction} for oncoming ambulance.`,
-              ...prev.slice(0, 9),
-            ]);
-            return 45;
-          }
+            if (nextDecision && nextDecision.activeGreen) {
+              setBackendStatus('connected');
+              setBackendData(nextDecision);
+              setActiveGreen(nextDecision.activeGreen);
+              setLogs((prev) => [nextDecision.message, ...prev.slice(0, 9)]);
+              setCountdown(nextDecision.greenDuration);
+            } else {
+              // Fallback if backend temporarily disconnected
+              const remaining = Object.keys(JUNCTIONS).filter((j) => j !== activeGreen);
+              const nextJ = remaining.sort((a, b) => vehicles[b] - vehicles[a])[0];
+              setActiveGreen(nextJ);
+              setCountdown(35);
+            }
+          })();
 
-          // Otherwise, pick next highest traffic junction
-          const allJunctions = Object.keys(JUNCTIONS);
-          const otherJunctions = allJunctions.filter((j) => j !== activeGreen);
-          const nextJunction = otherJunctions.sort((a, b) => vehicles[b] - vehicles[a])[0];
-          const tier = getTierInfo(vehicles[nextJunction]);
-
-          setActiveGreen(nextJunction);
-          setLogs((prev) => [
-            `🔄 Adaptive Shift: Switched green light to ${nextJunction} (${vehicles[nextJunction]} cars, ${tier.name} Tier) -> ${tier.greenTime}s.`,
-            ...prev.slice(0, 9),
-          ]);
-          return tier.greenTime;
+          return 35; // temporary placeholder until backend async promise resolves
         }
       });
     }, 1000);
@@ -250,7 +279,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isMonitoring, signalColor, activeGreen, vehicles, ambulance]);
 
-  // Compute total cars in network
+  // Total cars in network
   const totalCars = Object.values(vehicles).reduce((a, b) => a + Number(b), 0);
 
   // Compute live ambulance coordinate on the map along path
@@ -293,8 +322,34 @@ export default function App() {
 
   const ambCoords = getAmbulanceCoordinates();
 
+  // Frontend styling dictionary based on backend tier levels
+  const TIER_THEME = {
+    LOW: { color: '#10b981', badge: 'bg-emerald-500/20 text-emerald-400' },
+    MEDIUM: { color: '#06b6d4', badge: 'bg-cyan-500/20 text-cyan-400' },
+    HIGH: { color: '#f59e0b', badge: 'bg-amber-500/20 text-amber-400' },
+    VERY_HIGH: { color: '#ef4444', badge: 'bg-rose-500/20 text-rose-400' }
+  };
+
+  // Helper to extract tier info returned by backend and apply frontend styling
+  const getJunctionTier = (jId) => {
+    const rawTier = backendData?.junctions?.[jId];
+    if (rawTier) {
+      const theme = TIER_THEME[rawTier.level] || TIER_THEME.MEDIUM;
+      return {
+        ...rawTier,
+        ...theme
+      };
+    }
+    // Fallback if backend initializing
+    const count = vehicles[jId] || 0;
+    if (count <= 19) return { name: 'Low', greenTime: 15, ...TIER_THEME.LOW };
+    if (count <= 50) return { name: 'Medium', greenTime: 25, ...TIER_THEME.MEDIUM };
+    if (count <= 80) return { name: 'High', greenTime: 35, ...TIER_THEME.HIGH };
+    return { name: 'Very High', greenTime: 45, ...TIER_THEME.VERY_HIGH };
+  };
+
   // ============================================================================
-  // SECTION 6: USER INTERFACE (JSX)
+  // USER INTERFACE (JSX)
   // ============================================================================
   return (
     <div className="min-h-screen bg-[#070b14] text-slate-100 flex flex-col font-sans">
@@ -306,17 +361,32 @@ export default function App() {
               <Car className="w-5 h-5 fill-current" />
             </div>
             <div>
-              <h1 className="text-base font-bold text-white tracking-wide">
+              <h1 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
                 Smart Traffic System <span className="text-cyan-400">(4-Junction Grid)</span>
               </h1>
               <p className="text-[11px] text-slate-400">
-                Adaptive Signal Control &bull; Emergency Green Corridor &bull; 3rd Year Project
+                Adaptive Signal Control &bull; Emergency Green Corridor &bull; Full-Stack Architecture
               </p>
             </div>
           </div>
 
-          {/* Status Badge */}
+          {/* Status Badges */}
           <div className="flex items-center gap-2">
+            {/* Backend Connection Indicator */}
+            <div 
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border transition-colors ${
+                backendStatus === 'connected'
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                  : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+              }`}
+              title={backendStatus === 'connected' ? 'Connected to Node.js backend on port 3000' : 'Backend offline - start backend with npm run dev'}
+            >
+              <Server className="w-3.5 h-3.5" />
+              <span className={`w-1.5 h-1.5 rounded-full ${backendStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+              <span>Backend: {backendStatus === 'connected' ? 'Connected (:3000)' : 'Offline'}</span>
+            </div>
+
+            {/* Monitoring Status Badge */}
             <span
               className={`px-3 py-1 rounded-full text-xs font-mono font-bold flex items-center gap-1.5 border ${
                 isMonitoring
@@ -346,56 +416,67 @@ export default function App() {
       {/* Main Container */}
       <main className="max-w-6xl mx-auto w-full p-4 sm:p-6 space-y-6 flex-1">
         
-        {/* ============================================================== */}
-        {/* REQUIREMENT 1 & 4: INTERACTIVE TRAFFIC MAP + FIXED HOSPITAL    */}
-        {/* ============================================================== */}
-        <section className="bg-[#091122] border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-white flex items-center gap-2">
-              <Activity className="w-4 h-4 text-cyan-400" />
-              <span>Interactive Traffic Map</span>
-              <span className="text-xs font-normal text-slate-400">
-                (Click any junction to adjust vehicles)
-              </span>
-            </h2>
-
-            {/* Map Legend */}
-            <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
-              <span className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" /> Green
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Red
-              </span>
-              <span className="flex items-center gap-1 text-rose-400">
-                <Siren className="w-3.5 h-3.5" /> Ambulance
-              </span>
-              <span className="flex items-center gap-1 text-cyan-300">
-                <HospitalIcon className="w-3.5 h-3.5" /> Hospital
-              </span>
+        {/* INTERACTIVE TRAFFIC MAP + FIXED HOSPITAL */}
+        <section className="rounded-2xl bg-[#0b1329] border border-slate-800 p-4 sm:p-5 shadow-2xl relative overflow-hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 mb-3 border-b border-slate-800/80 gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <Activity className="w-4 h-4 text-cyan-400" />
+                Live 2D Intersection Grid (SVG)
+              </h2>
+              <p className="text-xs text-slate-400">
+                Interactive road map showing J1, J2, J3, J4 signals &bull; Green indicates active traffic flow
+              </p>
             </div>
+
+            {/* Current Active Signal Badge */}
+            {isMonitoring && (
+              <div className="flex items-center gap-2 font-mono text-xs">
+                <span className="text-slate-400">Active Phase:</span>
+                <span
+                  className={`px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 ${
+                    signalColor === 'GREEN'
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                      : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                  }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      signalColor === 'GREEN' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                    }`}
+                  />
+                  {activeGreen} ({signalColor} - {countdown}s)
+                </span>
+              </div>
+            )}
           </div>
 
-          {/* SVG Canvas Map */}
-          <div className="w-full bg-[#070b14] rounded-xl border border-slate-800/80 p-2 flex justify-center overflow-hidden">
-            <svg viewBox="0 0 700 420" className="w-full max-w-[700px] h-auto select-none">
-              {/* Asphalt Gray Roads */}
-              {/* Horizontal top road (J1 to J2) */}
-              <rect x="60" y="105" width="480" height="50" fill="#182030" rx="4" />
-              {/* Horizontal bottom road (J3 to J4 & Hospital) */}
-              <rect x="60" y="285" width="560" height="50" fill="#182030" rx="4" />
-              {/* Vertical left road (J1 to J3) */}
-              <rect x="155" y="30" width="50" height="360" fill="#182030" rx="4" />
-              {/* Vertical right road (J2 to J4) */}
-              <rect x="395" y="30" width="50" height="360" fill="#182030" rx="4" />
+          {/* SVG Map Canvas */}
+          <div className="w-full bg-[#070b14] rounded-xl border border-slate-800/80 flex items-center justify-center p-2 sm:p-4">
+            <svg
+              viewBox="0 0 680 430"
+              className="w-full max-w-2xl h-auto select-none"
+              style={{ maxHeight: '420px' }}
+            >
+              {/* City Background & Grid */}
+              <rect x="0" y="0" width="680" height="430" fill="#070b14" rx="10" />
+
+              {/* Asphalt Roads */}
+              {/* Horizontal Roads */}
+              <rect x="60" y="105" width="460" height="50" fill="#1e293b" rx="4" />
+              <rect x="60" y="285" width="580" height="50" fill="#1e293b" rx="4" />
+
+              {/* Vertical Roads */}
+              <rect x="155" y="30" width="50" height="370" fill="#1e293b" rx="4" />
+              <rect x="395" y="30" width="50" height="370" fill="#1e293b" rx="4" />
 
               {/* Dashed Centerlines */}
-              <line x1="60" y1="130" x2="540" y2="130" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
-              <line x1="60" y1="310" x2="620" y2="310" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
-              <line x1="180" y1="30" x2="180" y2="390" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
-              <line x1="420" y1="30" x2="420" y2="390" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
+              <line x1="60" y1="130" x2="520" y2="130" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
+              <line x1="60" y1="310" x2="620" y2="310" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
+              <line x1="180" y1="30" x2="180" y2="400" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
+              <line x1="420" y1="30" x2="420" y2="400" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
 
-              {/* Glowing Emergency Green Corridor when Ambulance is placed */}
+              {/* Glowing Ambulance Green Corridor Route */}
               {ambulance && (
                 <path
                   d={
@@ -407,33 +488,33 @@ export default function App() {
                   }
                   fill="none"
                   stroke="#10b981"
-                  strokeWidth="6"
-                  strokeDasharray="10,6"
+                  strokeWidth="8"
+                  strokeLinecap="round"
+                  strokeDasharray="10 6"
                   className="animate-pulse"
+                  opacity="0.9"
                 />
               )}
 
-              {/* REQUIREMENT 4: FIXED HOSPITAL LOCATION (Adjacent to Junction 4) */}
+              {/* CITY HOSPITAL LOCATION */}
               <g transform={`translate(${HOSPITAL.x}, ${HOSPITAL.y})`}>
-                <rect x="-35" y="-35" width="70" height="70" rx="8" fill="#0f172a" stroke="#ef4444" strokeWidth="2.5" />
-                {/* Red Cross */}
-                <rect x="-5" y="-18" width="10" height="36" fill="#ef4444" rx="2" />
-                <rect x="-18" y="-5" width="36" height="10" fill="#ef4444" rx="2" />
-                <text x="0" y="24" textAnchor="middle" fill="#ffffff" fontSize="9" fontWeight="bold">
+                <rect x="-40" y="-35" width="80" height="70" rx="10" fill="#1e1b4b" stroke="#6366f1" strokeWidth="2.5" />
+                <HospitalIcon x="-14" y="-24" width="28" height="28" className="text-rose-400" color="#f43f5e" />
+                <text x="0" y="18" textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="bold" fontFamily="monospace">
                   HOSPITAL
                 </text>
-                <text x="0" y="44" textAnchor="middle" fill="#ef4444" fontSize="8" fontWeight="bold" fontFamily="monospace">
-                  FIXED LOCATION
+                <text x="0" y="30" textAnchor="middle" fill="#a5b4fc" fontSize="8" fontFamily="monospace">
+                  City Medical
                 </text>
               </g>
 
-              {/* REQUIREMENT 1: THE FOUR JUNCTIONS (J1, J2, J3, J4) */}
+              {/* THE FOUR JUNCTIONS (J1, J2, J3, J4) */}
               {Object.values(JUNCTIONS).map((j) => {
                 const isSelected = selectedJunction === j.id;
                 const isGreen = isMonitoring && activeGreen === j.id;
                 const isYellow = isGreen && signalColor === 'YELLOW';
                 const count = vehicles[j.id];
-                const tier = getTierInfo(count);
+                const tier = getJunctionTier(j.id);
 
                 return (
                   <g
@@ -459,49 +540,42 @@ export default function App() {
                       {j.id}
                     </text>
 
-                    {/* Vehicle Count Badge */}
-                    <rect x="-26" y="-4" width="52" height="18" rx="4" fill="#020617" stroke="#334155" />
-                    <text x="0" y="9" textAnchor="middle" fill={tier.color} fontSize="10" fontWeight="bold" fontFamily="monospace">
-                      {count} veh
+                    {/* Traffic Light Circle */}
+                    <circle
+                      cx="0"
+                      cy="8"
+                      r="12"
+                      fill={isYellow ? '#f59e0b' : isGreen ? '#10b981' : '#ef4444'}
+                      className={isGreen ? 'animate-pulse' : ''}
+                    />
+
+                    {/* Timer or Count text */}
+                    {isMonitoring && isGreen ? (
+                      <text x="0" y="12" textAnchor="middle" fill="#000000" fontSize="11" fontWeight="black" fontFamily="monospace">
+                        {countdown}
+                      </text>
+                    ) : (
+                      <text x="0" y="12" textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="bold" fontFamily="monospace">
+                        {count}
+                      </text>
+                    )}
+
+                    {/* Tier badge text under junction */}
+                    <text x="0" y="48" textAnchor="middle" fill={tier.color || '#94a3b8'} fontSize="9" fontWeight="bold" fontFamily="monospace">
+                      {tier.name} ({count})
                     </text>
-
-                    {/* Signal Lights (🔴 🟡 🟢) */}
-                    <g transform="translate(0, 22)">
-                      <circle cx="-12" cy="0" r="4" fill={isMonitoring ? (!isGreen ? '#ef4444' : '#450a0a') : '#ef4444'} />
-                      <circle cx="0" cy="0" r="4" fill={isMonitoring && isYellow ? '#f59e0b' : '#451a03'} />
-                      <circle cx="12" cy="0" r="4" fill={isMonitoring && isGreen && !isYellow ? '#10b981' : '#022c22'} />
-                    </g>
-
-                    {/* Active Countdown Badge when Green */}
-                    {isMonitoring && isGreen && (
-                      <g transform="translate(0, -42)">
-                        <rect x="-20" y="-10" width="40" height="20" rx="4" fill="#020617" stroke="#10b981" strokeWidth="1.5" />
-                        <text x="0" y="4" textAnchor="middle" fill="#10b981" fontSize="11" fontWeight="bold" fontFamily="monospace">
-                          {countdown}s
-                        </text>
-                      </g>
-                    )}
-
-                    {/* Static Ambulance Marker before simulation starts */}
-                    {ambulance && ambulance.junction === j.id && !isMonitoring && (
-                      <g transform="translate(0, -44)">
-                        <rect x="-26" y="-9" width="52" height="18" rx="4" fill="#ef4444" stroke="#ffffff" strokeWidth="1" />
-                        <text x="0" y="4" textAnchor="middle" fill="#ffffff" fontSize="9" fontWeight="bold">
-                          🚑 SPAWNED
-                        </text>
-                      </g>
-                    )}
                   </g>
                 );
               })}
 
-              {/* REQUIREMENT 3: MOVING AMBULANCE PARTICLE */}
-              {ambulance && isMonitoring && ambCoords && (
+              {/* Moving Ambulance Animation */}
+              {ambulance && ambCoords && (
                 <g transform={`translate(${ambCoords.x}, ${ambCoords.y})`}>
-                  <circle r="14" fill="#ef4444" className="animate-ping opacity-60" />
-                  <rect x="-14" y="-8" width="28" height="16" rx="4" fill="#ef4444" stroke="#ffffff" strokeWidth="1.5" />
-                  <text x="0" y="4" textAnchor="middle" fill="#ffffff" fontSize="9" fontWeight="bold">
-                    🚑
+                  <circle cx="0" cy="0" r="16" fill="#dc2626" className="animate-ping" opacity="0.4" />
+                  <rect x="-14" y="-14" width="28" height="28" rx="6" fill="#ffffff" stroke="#ef4444" strokeWidth="2.5" />
+                  <Siren x="-9" y="-9" width="18" height="18" color="#dc2626" />
+                  <text x="0" y="-18" textAnchor="middle" fill="#f87171" fontSize="9" fontWeight="bold" fontFamily="monospace">
+                    AMBULANCE ({ambulance.progress}%)
                   </text>
                 </g>
               )}
@@ -509,144 +583,160 @@ export default function App() {
           </div>
         </section>
 
-        {/* ============================================================== */}
-        {/* REQUIREMENT 2, 3, 5: VEHICLE CONTROLS, AMBULANCE, SUBMIT BUTTON */}
-        {/* ============================================================== */}
-        <section className="bg-[#091122] border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-            <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <Sliders className="w-5 h-5 text-cyan-400" />
-                <span>Vehicle Management &amp; Controls</span>
-              </h2>
-              <p className="text-xs text-slate-400">
-                Adjust vehicle counts for the 4 junctions, optionally place an ambulance, and start monitoring.
-              </p>
-            </div>
-
-            {/* Quick Presets */}
-            <div className="flex items-center gap-1.5 text-xs font-mono">
-              <button
-                onClick={() => applyPreset('DEFAULT')}
-                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-slate-700"
-              >
-                Default
-              </button>
-              <button
-                onClick={() => applyPreset('BALANCED')}
-                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700"
-              >
-                Balanced (40)
-              </button>
-              <button
-                onClick={() => applyPreset('HEAVY')}
-                className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700"
-              >
-                Rush Hour
-              </button>
-            </div>
-          </div>
-
-          {/* Sliders for all 4 Junctions */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {Object.values(JUNCTIONS).map((j) => {
-              const count = vehicles[j.id];
-              const tier = getTierInfo(count);
-              const isSelected = selectedJunction === j.id;
-
-              return (
-                <div
-                  key={j.id}
-                  onClick={() => setSelectedJunction(j.id)}
-                  className={`p-3.5 rounded-xl border transition-all ${
-                    isSelected
-                      ? 'bg-slate-950 border-cyan-500/70 ring-1 ring-cyan-500/30'
-                      : 'bg-slate-950/60 border-slate-800'
-                  }`}
+        {/* CONTROLS & MANAGEMENT */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          
+          {/* VEHICLE MANAGEMENT (SLIDERS) */}
+          <section className="md:col-span-2 rounded-2xl bg-[#0b1329] border border-slate-800 p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-cyan-400" />
+                Vehicle Management &amp; Density Sliders
+              </h3>
+              
+              {/* Presets */}
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => applyPreset('DEFAULT')}
+                  className="px-2 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
                 >
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <span className="font-bold text-white text-sm">{j.id}</span>
-                      <span className="text-[11px] text-slate-400 block">{j.label}</span>
-                    </div>
-                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${tier.badge}`}>
-                      {tier.name} ({tier.greenTime}s Green)
-                    </span>
-                  </div>
-
-                  {/* Range Slider & Number Input */}
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min="0"
-                      max="120"
-                      value={count}
-                      onChange={(e) => handleVehicleChange(j.id, e.target.value)}
-                      className="flex-1 accent-cyan-400 cursor-pointer h-2 bg-slate-900 rounded-lg"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      max="120"
-                      value={count}
-                      onChange={(e) => handleVehicleChange(j.id, e.target.value)}
-                      className="w-16 px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono text-center text-sm font-bold focus:outline-none focus:border-cyan-400"
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* REQUIREMENT 3: RANDOM AMBULANCE PLACEMENT */}
-          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <Siren className="w-4 h-4 text-rose-400 animate-pulse" />
-                <span className="text-sm font-bold text-white">Emergency Vehicle Dispatch</span>
+                  Proposal
+                </button>
+                <button
+                  onClick={() => applyPreset('BALANCED')}
+                  className="px-2 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                >
+                  Balanced
+                </button>
+                <button
+                  onClick={() => applyPreset('HEAVY')}
+                  className="px-2 py-1 text-[11px] font-mono rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                >
+                  Rush Hour
+                </button>
               </div>
-              <p className="text-xs text-rose-200/80 mt-0.5">
-                {ambulance
-                  ? `🚑 Ambulance placed at ${ambulance.junction}! Green Corridor path: ${ambulance.path.join(' → ')}`
-                  : 'Place an emergency ambulance at a random junction to trigger Green Corridor Preemption.'}
-              </p>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Sliders for all 4 Junctions */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {Object.values(JUNCTIONS).map((j) => {
+                const count = vehicles[j.id];
+                const tier = getJunctionTier(j.id);
+                const isSelected = selectedJunction === j.id;
+
+                return (
+                  <div
+                    key={j.id}
+                    onClick={() => setSelectedJunction(j.id)}
+                    className={`p-3.5 rounded-xl border transition-all ${
+                      isSelected
+                        ? 'bg-slate-950 border-cyan-500/70 ring-1 ring-cyan-500/30'
+                        : 'bg-slate-950/60 border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <span className="font-bold text-white text-sm">{j.id}</span>
+                        <span className="text-[11px] text-slate-400 block">{j.label}</span>
+                      </div>
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${tier.badge || 'bg-slate-800 text-slate-300'}`}>
+                        {tier.name} ({tier.greenTime}s Green)
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs font-mono">
+                        <span className="text-slate-400">Cars Waiting:</span>
+                        <span className="text-white font-bold">{count} vehicles</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="120"
+                        value={count}
+                        onChange={(e) => handleVehicleChange(j.id, e.target.value)}
+                        className="w-full accent-cyan-400 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* AMBULANCE DISPATCH & HOSPITAL CORRIDOR */}
+          <section className="rounded-2xl bg-[#0b1329] border border-slate-800 p-5 space-y-4 flex flex-col justify-between">
+            <div className="space-y-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2 border-b border-slate-800 pb-3">
+                <Siren className="w-4 h-4 text-rose-400" />
+                Emergency Vehicle Control
+              </h3>
+
+              <p className="text-xs text-slate-400">
+                Spawns an ambulance on a random junction. Backend automatically computes shortest route and overrides signals to <strong>City Hospital</strong>.
+              </p>
+
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <span className="text-slate-400">Ambulance Status:</span>
+                  <span className={`font-bold ${ambulance ? 'text-rose-400 animate-pulse' : 'text-slate-500'}`}>
+                    {ambulance ? `ACTIVE at ${ambulance.junction}` : 'NOT SPAWNED'}
+                  </span>
+                </div>
+                {ambulance && (
+                  <div className="text-[11px] font-mono text-emerald-400">
+                    Route: {ambulance.path.join(' ➔ ')}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2">
               <button
                 onClick={handleAddRandomAmbulance}
-                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md shadow-rose-900/40"
+                className="w-full py-2.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-500 text-white transition-colors shadow-lg shadow-rose-950/50"
               >
-                <Shuffle className="w-3.5 h-3.5" />
-                <span>Place Random Ambulance</span>
+                <Shuffle className="w-4 h-4" />
+                <span>SPAWN RANDOM AMBULANCE</span>
               </button>
 
               {ambulance && (
                 <button
                   onClick={handleClearAmbulance}
-                  className="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                  className="w-full py-2 px-3 rounded-xl text-xs font-mono text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-800 transition-colors"
                 >
-                  Clear
+                  Clear Ambulance
                 </button>
               )}
             </div>
-          </div>
+          </section>
+        </div>
 
-          {/* REQUIREMENT 5: SUBMIT & START LIVE MONITORING BUTTON */}
-          <div className="pt-2">
+        {/* SUBMIT BUTTON & LIVE MONITORING TRIGGER */}
+        <section className="rounded-2xl bg-[#0b1329] border border-slate-800 p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Submission &amp; Live Monitoring Engine
+              </h3>
+              <p className="text-xs text-slate-400">
+                Submit current traffic state to Node.js backend. The decision engine will initiate live signal cycling.
+              </p>
+            </div>
+
             <button
               onClick={handleToggleMonitoring}
-              className={`w-full py-3.5 rounded-xl font-black text-sm tracking-wide flex items-center justify-center gap-2 transition-all shadow-lg active:scale-[0.99] ${
+              className={`py-3 px-6 rounded-xl font-black text-sm flex items-center justify-center gap-2 tracking-wider transition-all shadow-xl ${
                 isMonitoring
-                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
-                  : 'bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-slate-950 shadow-cyan-500/20'
+                  ? 'bg-amber-600 hover:bg-amber-500 text-slate-950'
+                  : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-950/40'
               }`}
             >
               {isMonitoring ? (
                 <>
                   <Pause className="w-4 h-4 fill-current" />
-                  <span>PAUSE MONITORING / EDIT VEHICLES</span>
+                  <span>PAUSE LIVE MONITORING</span>
                 </>
               ) : (
                 <>
@@ -657,11 +747,11 @@ export default function App() {
             </button>
           </div>
 
-          {/* LIVE LOGS FEED (Visible when monitoring) */}
+          {/* LIVE LOGS FEED */}
           {isMonitoring && (
             <div className="pt-3 border-t border-slate-800 space-y-2">
               <span className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider block">
-                Live Signal Decision Log:
+                Backend Decision Log Feed:
               </span>
               <div className="space-y-1.5 max-h-28 overflow-y-auto font-mono text-xs">
                 {logs.map((log, index) => (
@@ -674,11 +764,11 @@ export default function App() {
           )}
         </section>
 
-        {/* 3rd Year Viva Reference Summary */}
+        {/* Viva Reference Summary */}
         <section className="rounded-xl bg-[#091122]/70 border border-slate-800 p-4 text-xs text-slate-300">
           <div className="flex items-center gap-2 font-bold text-white mb-2">
             <Award className="w-4 h-4 text-cyan-400" />
-            <span>Viva Summary: 4-Tier Adaptive Timing Algorithm</span>
+            <span>Backend Logic: 4-Tier Adaptive Timing Algorithm</span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
             <div className="bg-slate-950/80 p-2 rounded border border-emerald-900/40 text-emerald-300">
@@ -702,9 +792,9 @@ export default function App() {
 
       </main>
 
-      {/* Simple Footer */}
+      {/* Footer */}
       <footer className="border-t border-slate-800/80 py-3 text-center text-xs text-slate-500 font-mono">
-        Total Cars in Grid: {totalCars} &bull; City Hospital: Fixed at (580, 310) &bull; 4-Junction Controller
+        Total Cars in Grid: {totalCars} &bull; Backend: Node.js Express (:3000) &bull; Frontend: React Vite (:5173)
       </footer>
     </div>
   );
