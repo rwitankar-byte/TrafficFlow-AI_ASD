@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Car, Activity, Hospital as HospitalIcon, Sliders, Award } from 'lucide-react';
+import { Car, Activity, Hospital as HospitalIcon, Sliders, Award, Siren, Shuffle } from 'lucide-react';
 
 /**
  * ==============================================================================
@@ -47,6 +47,9 @@ function getTierInfo(vehicleCount) {
 export default function App() {
   const [vehicles, setVehicles] = useState(DEFAULT_VEHICLES);
   const [selectedJunction, setSelectedJunction] = useState('J1');
+  
+  // Requirement 3: Ambulance state
+  const [ambulance, setAmbulance] = useState(null);
 
   // Requirement 2: Adjust vehicle counts
   const handleVehicleChange = (junctionId, count) => {
@@ -59,6 +62,27 @@ export default function App() {
     if (presetName === 'BALANCED') setVehicles({ J1: 40, J2: 40, J3: 40, J4: 40 });
     if (presetName === 'LIGHT') setVehicles({ J1: 15, J2: 12, J3: 18, J4: 10 });
     if (presetName === 'HEAVY') setVehicles({ J1: 95, J2: 85, J3: 90, J4: 110 });
+  };
+
+  // Requirement 3: Add ambulance at a random location
+  const handleAddRandomAmbulance = () => {
+    const startCandidates = ['J1', 'J2', 'J3'];
+    const randomJunction = startCandidates[Math.floor(Math.random() * startCandidates.length)];
+
+    let path = [];
+    if (randomJunction === 'J1') path = ['J1', 'J2', 'J4', 'HOSPITAL'];
+    else if (randomJunction === 'J2') path = ['J2', 'J4', 'HOSPITAL'];
+    else path = ['J3', 'J4', 'HOSPITAL'];
+
+    setAmbulance({
+      junction: randomJunction,
+      path: path,
+      progress: 0,
+    });
+  };
+
+  const handleClearAmbulance = () => {
+    setAmbulance(null);
   };
 
   return (
@@ -105,6 +129,9 @@ export default function App() {
               <span className="flex items-center gap-1">
                 <span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Red Light
               </span>
+              <span className="flex items-center gap-1 text-rose-400">
+                <Siren className="w-3.5 h-3.5" /> Ambulance
+              </span>
               <span className="flex items-center gap-1 text-cyan-300">
                 <HospitalIcon className="w-3.5 h-3.5" /> Fixed Hospital
               </span>
@@ -125,6 +152,24 @@ export default function App() {
               <line x1="60" y1="310" x2="620" y2="310" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
               <line x1="180" y1="30" x2="180" y2="390" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
               <line x1="420" y1="30" x2="420" y2="390" stroke="#eab308" strokeWidth="2" strokeDasharray="8,8" />
+
+              {/* Glowing Emergency Green Corridor when Ambulance is placed */}
+              {ambulance && (
+                <path
+                  d={
+                    ambulance.junction === 'J1'
+                      ? 'M 180 130 L 420 130 L 420 310 L 580 310'
+                      : ambulance.junction === 'J2'
+                      ? 'M 420 130 L 420 310 L 580 310'
+                      : 'M 180 310 L 420 310 L 580 310'
+                  }
+                  fill="none"
+                  stroke="#10b981"
+                  strokeWidth="6"
+                  strokeDasharray="10,6"
+                  className="animate-pulse"
+                />
+              )}
 
               {/* REQUIREMENT 4: FIXED HOSPITAL LOCATION (Adjacent to Junction 4) */}
               <g transform={`translate(${HOSPITAL.x}, ${HOSPITAL.y})`}>
@@ -179,6 +224,16 @@ export default function App() {
                       <circle cx="0" cy="0" r="4" fill="#451a03" />
                       <circle cx="12" cy="0" r="4" fill="#022c22" />
                     </g>
+
+                    {/* Static Ambulance Marker */}
+                    {ambulance && ambulance.junction === j.id && (
+                      <g transform="translate(0, -44)">
+                        <rect x="-26" y="-9" width="52" height="18" rx="4" fill="#ef4444" stroke="#ffffff" strokeWidth="1" />
+                        <text x="0" y="4" textAnchor="middle" fill="#ffffff" fontSize="9" fontWeight="bold">
+                          🚑 SPAWNED
+                        </text>
+                      </g>
+                    )}
                   </g>
                 );
               })}
@@ -187,7 +242,7 @@ export default function App() {
         </section>
 
         {/* ============================================================== */}
-        {/* REQUIREMENT 2: VEHICLE MANAGEMENT CONTROLS                     */}
+        {/* REQUIREMENT 2 & 3: VEHICLE MANAGEMENT + RANDOM AMBULANCE       */}
         {/* ============================================================== */}
         <section className="bg-[#091122] border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
@@ -197,7 +252,7 @@ export default function App() {
                 <span>Vehicle Management &amp; Controls</span>
               </h2>
               <p className="text-xs text-slate-400">
-                Adjust vehicle counts for the 4 junctions.
+                Adjust vehicle counts for the 4 junctions and dispatch emergency vehicles.
               </p>
             </div>
 
@@ -272,6 +327,40 @@ export default function App() {
                 </div>
               );
             })}
+          </div>
+
+          {/* REQUIREMENT 3: RANDOM AMBULANCE PLACEMENT */}
+          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Siren className="w-4 h-4 text-rose-400 animate-pulse" />
+                <span className="text-sm font-bold text-white">Emergency Vehicle Dispatch</span>
+              </div>
+              <p className="text-xs text-rose-200/80 mt-0.5">
+                {ambulance
+                  ? `🚑 Ambulance placed at ${ambulance.junction}! Green Corridor path: ${ambulance.path.join(' → ')}`
+                  : 'Place an emergency ambulance at a random junction to trigger Green Corridor Preemption.'}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleAddRandomAmbulance}
+                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-md shadow-rose-900/40"
+              >
+                <Shuffle className="w-3.5 h-3.5" />
+                <span>Place Random Ambulance</span>
+              </button>
+
+              {ambulance && (
+                <button
+                  onClick={handleClearAmbulance}
+                  className="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
         </section>
 
