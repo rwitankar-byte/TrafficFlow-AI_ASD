@@ -1,88 +1,74 @@
-const { calculateSignalTiming, calculateNetworkDecision } = require('../algorithms/trafficDecision');
+const { 
+  calculate16SignalNetworkDecision, 
+  evaluateSingleJunction 
+} = require('../algorithms/trafficDecision');
 
-// Simulated traffic conditions from project proposal (Section 3)
-const defaultTrafficData = {
-  north: 80,  // High (35s)
-  south: 50,  // Medium (25s)
-  east: 15,   // Low (15s)
-  west: 100   // Very High (45s)
-};
-
-const defaultNetworkData = {
-  J1: 80,
-  J2: 50,
-  J3: 15,
-  J4: 100
+// Initial default vehicle counts for all 16 directional approaches
+// 4 Junctions x 4 Directions (North, South, East, West)
+const defaultNetworkTraffic = {
+  J1: { north: 25, south: 20, east: 15, west: 20 }, // Grand Ave (Total: 80)
+  J2: { north: 15, south: 10, east: 15, west: 10 }, // Metro Blvd (Total: 50)
+  J3: { north: 5,  south: 4,  east: 3,  west: 3  }, // Outer Ring (Total: 15)
+  J4: { north: 30, south: 25, east: 15, west: 30 }  // Expressway (Total: 100)
 };
 
 /**
- * Controller to fetch current simulated traffic density
+ * Fetch initial 16-signal traffic data
  * GET /api/traffic/current
  */
 const getCurrentTraffic = (req, res) => {
   res.status(200).json({
     status: 'success',
-    timestamp: new Date().toISOString(),
-    directional: defaultTrafficData,
-    network: defaultNetworkData
+    server: 'Node.js Express (Port 3000)',
+    totalSignals: 16,
+    defaultVehicles: defaultNetworkTraffic
   });
 };
 
 /**
- * Controller to compute traffic light decision
- * GET /api/traffic/decision (evaluates current or query traffic)
- * POST /api/traffic/decision (evaluates custom traffic passed in request body)
+ * Controller to compute decisions for all 16 signals (or individual junction)
+ * GET & POST /api/traffic/decision
  */
 const getTrafficDecision = (req, res) => {
-  // Check if request is for the 4-junction network (J1, J2, J3, J4)
-  const isNetworkPayload = req.body?.vehicles || req.body?.J1 !== undefined || req.query?.J1 !== undefined;
+  const payload = req.body || {};
 
-  if (isNetworkPayload) {
-    const vehicles = req.body?.vehicles || {
-      J1: req.body?.J1 ?? req.query?.J1 ?? defaultNetworkData.J1,
-      J2: req.body?.J2 ?? req.query?.J2 ?? defaultNetworkData.J2,
-      J3: req.body?.J3 ?? req.query?.J3 ?? defaultNetworkData.J3,
-      J4: req.body?.J4 ?? req.query?.J4 ?? defaultNetworkData.J4,
+  // Check if request is for the 16-signal network (J1, J2, J3, J4 with directional counts)
+  const networkVehicles = payload.networkVehicles || payload.vehicles || defaultNetworkTraffic;
+
+  // Support single junction directional query (north, south, east, west)
+  if (payload.north !== undefined || req.query?.north !== undefined) {
+    const singleCounts = {
+      north: payload.north ?? req.query?.north ?? 20,
+      south: payload.south ?? req.query?.south ?? 15,
+      east: payload.east ?? req.query?.east ?? 40,
+      west: payload.west ?? req.query?.west ?? 10
     };
-
-    const decision = calculateNetworkDecision({
-      vehicles,
-      ambulance: req.body?.ambulance || null,
-      currentGreen: req.body?.currentGreen || req.query?.currentGreen || null,
-      isNextCycle: Boolean(req.body?.isNextCycle || req.query?.isNextCycle)
-    });
-
+    const decision = evaluateSingleJunction(singleCounts, payload.emergency || req.query?.emergency || null);
     return res.status(200).json({
       status: 'success',
       server: 'Node.js Express (Port 3000)',
       connected: true,
-      timestamp: new Date().toISOString(),
       ...decision
     });
   }
 
-  // Directional calculation (North, South, East, West)
-  const trafficData = {
-    north: req.body?.north ?? req.query?.north ?? defaultTrafficData.north,
-    south: req.body?.south ?? req.query?.south ?? defaultTrafficData.south,
-    east: req.body?.east ?? req.query?.east ?? defaultTrafficData.east,
-    west: req.body?.west ?? req.query?.west ?? defaultTrafficData.west,
-    emergencyDirection: req.body?.emergencyDirection ?? req.query?.emergencyDirection ?? req.body?.emergency ?? req.query?.emergency,
-    emergencyVehicleType: req.body?.emergencyVehicleType ?? req.query?.emergencyVehicleType
-  };
-
-  const decision = calculateSignalTiming(trafficData);
+  // Full 16-signal multi-junction decision calculation
+  const decision = calculate16SignalNetworkDecision({
+    networkVehicles,
+    ambulance: payload.ambulance || null,
+    activeSignals: payload.activeSignals || {},
+    rotatingJunction: payload.rotatingJunction || null
+  });
 
   return res.status(200).json({
-    status: 'success',
+    ...decision,
     server: 'Node.js Express (Port 3000)',
-    connected: true,
-    timestamp: new Date().toISOString(),
-    ...decision
+    connected: true
   });
 };
 
 module.exports = {
   getCurrentTraffic,
-  getTrafficDecision
+  getTrafficDecision,
+  defaultNetworkTraffic
 };
