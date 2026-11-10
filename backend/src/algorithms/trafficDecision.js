@@ -182,18 +182,23 @@ function calculate16SignalNetworkDecision({ networkVehicles = {}, ambulance = nu
   const junctionIds = ['J1', 'J2', 'J3', 'J4'];
   const networkDecision = {};
 
-  // Determine which junctions are on the ambulance route
+  // Localized Emergency Preemption:
+  // ONLY the junction where the ambulance has actually arrived gets emergency green!
+  // All other junctions continue their normal adaptive logic based on vehicle counts.
   let corridorActiveJunctions = {};
-  if (ambulance && ambulance.junction) {
-    const start = ambulance.junction;
-    if (start === 'J1') {
-      corridorActiveJunctions = { J1: 'EAST', J2: 'SOUTH', J4: 'EAST' };
-    } else if (start === 'J2') {
-      corridorActiveJunctions = { J2: 'SOUTH', J4: 'EAST' };
-    } else if (start === 'J3') {
-      corridorActiveJunctions = { J3: 'EAST', J4: 'EAST' };
-    } else if (start === 'J4') {
-      corridorActiveJunctions = { J4: 'EAST' };
+  if (ambulance && (ambulance.currentJunction || ambulance.junction)) {
+    const activeAt = ambulance.currentJunction || ambulance.junction;
+
+    // Directional exit towards City Hospital when ambulance is at that junction
+    const exitDirections = {
+      J1: 'EAST',  // exits J1 towards J2
+      J2: 'SOUTH', // exits J2 towards J4
+      J3: 'EAST',  // exits J3 towards J4
+      J4: 'EAST'   // exits J4 towards City Hospital
+    };
+
+    if (exitDirections[activeAt]) {
+      corridorActiveJunctions[activeAt] = exitDirections[activeAt];
     }
   }
 

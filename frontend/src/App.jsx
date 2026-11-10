@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Car, 
   Siren, 
@@ -79,6 +79,38 @@ async function callBackendDecision(payload) {
   }
 }
 
+/**
+ * Determine which junction the ambulance is physically located at based on route progress
+ */
+function getAmbulanceCurrentJunction(startJunction, progress) {
+  if (progress >= 100) return 'HOSPITAL';
+  if (startJunction === 'J1') {
+    if (progress < 34) return 'J1';
+    if (progress < 68) return 'J2';
+    return 'J4';
+  } else if (startJunction === 'J2') {
+    if (progress < 50) return 'J2';
+    return 'J4';
+  } else if (startJunction === 'J3') {
+    if (progress < 50) return 'J3';
+    return 'J4';
+  }
+  return startJunction;
+}
+
+/**
+ * Get active corridor segment SVG path for the junction where ambulance currently is
+ */
+function getActiveSegmentPath(ambulance) {
+  if (!ambulance || ambulance.progress >= 100) return null;
+  const currentJ = ambulance.currentJunction || ambulance.junction;
+  if (currentJ === 'J1') return 'M 180 130 L 440 130';
+  if (currentJ === 'J2') return 'M 440 130 L 440 310';
+  if (currentJ === 'J3') return 'M 180 310 L 440 310';
+  if (currentJ === 'J4') return 'M 440 310 L 600 310';
+  return null;
+}
+
 export default function App() {
   // 1. Vehicle counts state for all 16 approaches (4 junctions x 4 directions)
   const [networkVehicles, setNetworkVehicles] = useState(DEFAULT_NETWORK_VEHICLES);
@@ -108,16 +140,22 @@ export default function App() {
     J4: 25
   });
 
-  const [signalColors, setSignalColors] = useState({
-    J1: 'GREEN',
-    J2: 'GREEN',
-    J3: 'GREEN',
-    J4: 'GREEN'
-  });
-
   const [logs, setLogs] = useState([]);
   const [backendStatus, setBackendStatus] = useState('connecting'); // 'connected' | 'offline'
   const [backendData, setBackendData] = useState(null);
+
+  // Refs for real-time simulation interval to access latest state without interval recreation
+  const networkVehiclesRef = useRef(networkVehicles);
+  networkVehiclesRef.current = networkVehicles;
+
+  const activeSignalsRef = useRef(activeSignals);
+  activeSignalsRef.current = activeSignals;
+
+  const ambulanceRef = useRef(ambulance);
+  ambulanceRef.current = ambulance;
+
+  const countdownsRef = useRef(countdowns);
+  countdownsRef.current = countdowns;
 
   // ============================================================================
   // SYNC 16-SIGNAL DECISION WITH NODE.JS BACKEND (SETUP MODE ONLY)
@@ -131,7 +169,11 @@ export default function App() {
     async function syncDecision() {
       const data = await callBackendDecision({
         networkVehicles,
-        ambulance: ambulance ? { junction: ambulance.junction, progress: ambulance.progress } : null,
+        ambulance: ambulance ? {
+          junction: ambulance.junction,
+          currentJunction: ambulance.currentJunction || ambulance.junction,
+          progress: ambulance.progress
+        } : null,
         activeSignals
       });
 
@@ -148,6 +190,8 @@ export default function App() {
               newActive[jId] = jData.activeDirection;
               newCountdowns[jId] = jData.duration;
             }
+            activeSignalsRef.current = newActive;
+            countdownsRef.current = newCountdowns;
             setActiveSignals(newActive);
             setCountdowns(newCountdowns);
           }
@@ -159,7 +203,7 @@ export default function App() {
 
     syncDecision();
     return () => { isMounted = false; };
-  }, [networkVehicles, ambulance?.junction, isMonitoring]);
+  }, [networkVehicles, ambulance?.junction, ambulance?.currentJunction, isMonitoring]);
 
   // ============================================================================
   // USER ACTION HANDLERS
@@ -167,57 +211,69 @@ export default function App() {
   // Update vehicle count for a specific direction at a specific junction
   const handleDirectionChange = (junctionId, direction, count) => {
     const val = Math.max(0, Math.min(100, Number(count) || 0));
-    setNetworkVehicles((prev) => ({
-      ...prev,
-      [junctionId]: {
-        ...prev[junctionId],
-        [direction]: val
-      }
-    }));
+    setNetworkVehicles((prev) => {
+      const updated = {
+        ...prev,
+        [junctionId]: {
+          ...prev[junctionId],
+          [direction]: val
+        }
+      };
+      networkVehiclesRef.current = updated;
+      return updated;
+    });
   };
 
   // Quick Presets
   const applyPreset = (presetName) => {
-    if (presetName === 'DEFAULT') setNetworkVehicles(DEFAULT_NETWORK_VEHICLES);
+    let nextVehicles = DEFAULT_NETWORK_VEHICLES;
     if (presetName === 'BALANCED') {
-      setNetworkVehicles({
+      nextVehicles = {
         J1: { north: 20, south: 20, east: 20, west: 20 },
         J2: { north: 20, south: 20, east: 20, west: 20 },
         J3: { north: 20, south: 20, east: 20, west: 20 },
         J4: { north: 20, south: 20, east: 20, west: 20 }
-      });
-    }
-    if (presetName === 'RUSH_HOUR') {
-      setNetworkVehicles({
+      };
+    } else if (presetName === 'RUSH_HOUR') {
+      nextVehicles = {
         J1: { north: 60, south: 45, east: 30, west: 20 },
         J2: { north: 40, south: 20, east: 70, west: 35 },
         J3: { north: 15, south: 20, east: 10, west: 15 },
         J4: { north: 85, south: 50, east: 40, west: 65 }
-      });
+      };
     }
+    setNetworkVehicles(nextVehicles);
+    networkVehiclesRef.current = nextVehicles;
   };
 
   // Spawn Ambulance at random junction and call backend for corridor
   const handleAddRandomAmbulance = async () => {
     const candidates = ['J1', 'J2', 'J3'];
     const randomJunction = candidates[Math.floor(Math.random() * candidates.length)];
-
-    const data = await callBackendDecision({
-      networkVehicles,
-      ambulance: { junction: randomJunction, progress: 0 },
-      activeSignals
-    });
-
     const corridorPath = randomJunction === 'J1' 
       ? ['J1', 'J2', 'J4', 'HOSPITAL'] 
       : randomJunction === 'J2' 
       ? ['J2', 'J4', 'HOSPITAL'] 
       : ['J3', 'J4', 'HOSPITAL'];
 
-    setAmbulance({
+    const newAmb = {
       junction: randomJunction,
+      currentJunction: randomJunction,
       path: corridorPath,
       progress: 0
+    };
+
+    setAmbulance(newAmb);
+    ambulanceRef.current = newAmb;
+
+    const data = await callBackendDecision({
+      networkVehicles: networkVehiclesRef.current,
+      ambulance: {
+        junction: newAmb.junction,
+        currentJunction: newAmb.currentJunction,
+        progress: 0
+      },
+      activeSignals: activeSignalsRef.current
     });
 
     if (data && data.junctions) {
@@ -229,17 +285,45 @@ export default function App() {
         newActive[jId] = jData.activeDirection;
         newCountdowns[jId] = jData.duration;
       }
+      activeSignalsRef.current = newActive;
+      countdownsRef.current = newCountdowns;
       setActiveSignals(newActive);
       setCountdowns(newCountdowns);
       setLogs((prev) => [
-        `🚨 Ambulance Dispatched at ${randomJunction}: Route cleared toward City Hospital. 45s Green Corridor active!`,
+        `🚨 Ambulance Dispatched at ${randomJunction}: Emergency GREEN granted at ${randomJunction} only! Other junctions continue AI adaptive logic.`,
         ...prev.slice(0, 9)
       ]);
     }
   };
 
-  const handleClearAmbulance = () => {
+  const handleClearAmbulance = async () => {
     setAmbulance(null);
+    ambulanceRef.current = null;
+
+    const data = await callBackendDecision({
+      networkVehicles: networkVehiclesRef.current,
+      ambulance: null,
+      activeSignals: activeSignalsRef.current
+    });
+
+    if (data && data.junctions) {
+      setBackendStatus('connected');
+      setBackendData(data);
+      const newActive = {};
+      const newCountdowns = {};
+      for (const [jId, jData] of Object.entries(data.junctions)) {
+        newActive[jId] = jData.activeDirection;
+        newCountdowns[jId] = jData.duration;
+      }
+      activeSignalsRef.current = newActive;
+      countdownsRef.current = newCountdowns;
+      setActiveSignals(newActive);
+      setCountdowns(newCountdowns);
+      setLogs((prev) => [
+        `Ambulance Cleared: All 4 junctions restored to standard AI adaptive control.`,
+        ...prev.slice(0, 9)
+      ]);
+    }
   };
 
   // Toggle Live Monitoring
@@ -249,9 +333,13 @@ export default function App() {
 
     if (nextState) {
       const data = await callBackendDecision({
-        networkVehicles,
-        ambulance: ambulance ? { junction: ambulance.junction, progress: ambulance.progress } : null,
-        activeSignals
+        networkVehicles: networkVehiclesRef.current,
+        ambulance: ambulanceRef.current ? {
+          junction: ambulanceRef.current.junction,
+          currentJunction: ambulanceRef.current.currentJunction || ambulanceRef.current.junction,
+          progress: ambulanceRef.current.progress
+        } : null,
+        activeSignals: activeSignalsRef.current
       });
 
       if (data && data.junctions) {
@@ -263,6 +351,8 @@ export default function App() {
           newActive[jId] = jData.activeDirection;
           newCountdowns[jId] = jData.duration;
         }
+        activeSignalsRef.current = newActive;
+        countdownsRef.current = newCountdowns;
         setActiveSignals(newActive);
         setCountdowns(newCountdowns);
         setLogs([`⚡ 16-Signal Live Monitoring Started across J1, J2, J3, J4.`]);
@@ -273,7 +363,9 @@ export default function App() {
   const handleReset = () => {
     setIsMonitoring(false);
     setNetworkVehicles(DEFAULT_NETWORK_VEHICLES);
+    networkVehiclesRef.current = DEFAULT_NETWORK_VEHICLES;
     setAmbulance(null);
+    ambulanceRef.current = null;
     setSelectedJunction('J1');
     setLogs([]);
   };
@@ -284,103 +376,173 @@ export default function App() {
   useEffect(() => {
     if (!isMonitoring) return;
 
-    const timer = setInterval(() => {
-      // 1. Advance ambulance progress along corridor
-      if (ambulance) {
-        setAmbulance((prev) => {
-          if (!prev) return null;
-          if (prev.progress >= 100) return prev;
-          return { ...prev, progress: prev.progress + 2 };
-        });
-      }
+    const timer = setInterval(async () => {
+      const currentAmb = ambulanceRef.current;
 
-      // Track junctions where green road has completely emptied (0 cars)
-      const junctionsToRotate = [];
+      // 1. Advance ambulance progress & handoff emergency green between junctions
+      if (currentAmb && currentAmb.progress < 100) {
+        const nextProgress = Math.min(100, currentAmb.progress + 2);
+        const nextJunction = getAmbulanceCurrentJunction(currentAmb.junction, nextProgress);
+        const prevJunction = currentAmb.currentJunction || currentAmb.junction;
+
+        const updatedAmb = {
+          ...currentAmb,
+          progress: nextProgress,
+          currentJunction: nextJunction
+        };
+        ambulanceRef.current = updatedAmb;
+        setAmbulance(updatedAmb);
+
+        // Junction transition: only the junction where ambulance has actually arrived gets green!
+        if (nextJunction !== prevJunction) {
+          const res = await callBackendDecision({
+            networkVehicles: networkVehiclesRef.current,
+            ambulance: {
+              junction: updatedAmb.junction,
+              currentJunction: updatedAmb.currentJunction,
+              progress: updatedAmb.progress
+            },
+            activeSignals: activeSignalsRef.current
+          });
+
+          if (res?.junctions) {
+            setBackendData(res);
+            const newActive = { ...activeSignalsRef.current };
+            const newCounts = { ...countdownsRef.current };
+            for (const [jId, jData] of Object.entries(res.junctions)) {
+              newActive[jId] = jData.activeDirection;
+              newCounts[jId] = jData.duration;
+            }
+            activeSignalsRef.current = newActive;
+            countdownsRef.current = newCounts;
+            setActiveSignals(newActive);
+            setCountdowns(newCounts);
+
+            if (nextJunction === 'HOSPITAL') {
+              setLogs((prev) => [
+                `🏥 Ambulance reached City Hospital safely! All 4 junctions running AI adaptive logic.`,
+                ...prev.slice(0, 9)
+              ]);
+            } else {
+              setLogs((prev) => [
+                `🚨 Ambulance arrived at ${nextJunction}: Emergency GREEN granted! Junction ${prevJunction} returned to normal AI adaptive logic.`,
+                ...prev.slice(0, 9)
+              ]);
+            }
+          }
+        }
+      }
 
       // 2. Realistic Vehicle Flow: Dynamically reduce cars on active GREEN lanes
       // (CRITICAL: ZERO backend API calls while vehicles are simply decreasing)
-      setNetworkVehicles((prevNetwork) => {
-        let hasChanges = false;
-        const updated = { ...prevNetwork };
+      const junctionsToRotate = [];
+      const updatedVehicles = { ...networkVehiclesRef.current };
+      let hasVehicleChanges = false;
 
-        for (const [jId, activeDir] of Object.entries(activeSignals)) {
-          if (!activeDir) continue;
-          const dirKey = activeDir.toLowerCase();
-          const currentCount = updated[jId]?.[dirKey] ?? 0;
+      for (const [jId, activeDir] of Object.entries(activeSignalsRef.current)) {
+        if (!activeDir || activeDir === 'ALL_RED') continue;
 
-          if (currentCount > 0) {
-            // Random realistic discharge rate: 75% chance of 1-2 cars passing through green per second
-            const discharge = Math.random() < 0.75 ? (Math.random() < 0.35 ? 2 : 1) : 0;
-            if (discharge > 0) {
-              hasChanges = true;
-              const newCount = Math.max(0, currentCount - discharge);
-              updated[jId] = {
-                ...updated[jId],
-                [dirKey]: newCount
-              };
+        const isEmergencyAtThisJunction = ambulanceRef.current && 
+          (ambulanceRef.current.currentJunction || ambulanceRef.current.junction) === jId &&
+          ambulanceRef.current.progress < 100;
 
-              // If vehicle count on green signal reaches 0 -> queue is clear!
-              if (newCount === 0) {
-                junctionsToRotate.push(jId);
-              }
+        const dirKey = activeDir.toLowerCase();
+        const currentCount = updatedVehicles[jId]?.[dirKey] ?? 0;
+
+        if (currentCount > 0) {
+          // Random realistic discharge rate: 75% chance of 1-2 cars passing through green per second
+          const discharge = Math.random() < 0.75 ? (Math.random() < 0.35 ? 2 : 1) : 0;
+          if (discharge > 0) {
+            hasVehicleChanges = true;
+            const newCount = Math.max(0, currentCount - discharge);
+            updatedVehicles[jId] = {
+              ...updatedVehicles[jId],
+              [dirKey]: newCount
+            };
+
+            // If queue reaches 0 and NOT in emergency preemption -> trigger backend rotation!
+            if (newCount === 0 && !isEmergencyAtThisJunction) {
+              junctionsToRotate.push(jId);
             }
-          } else {
-            // Already 0 cars on green -> queue is clear, advance to next waiting red signal!
+          }
+        } else {
+          // Already 0 cars on green and not emergency -> rotate!
+          if (!isEmergencyAtThisJunction) {
             junctionsToRotate.push(jId);
           }
         }
+      }
 
-        return hasChanges ? updated : prevNetwork;
-      });
+      if (hasVehicleChanges) {
+        networkVehiclesRef.current = updatedVehicles;
+        setNetworkVehicles(updatedVehicles);
+      }
 
       // 3. Decrement countdowns & execute backend logic ONLY when green queue reaches 0 OR countdown expires
-      setCountdowns((prev) => {
-        const nextCountdowns = { ...prev };
-        for (const jId of Object.keys(JUNCTIONS)) {
-          const isQueueEmpty = junctionsToRotate.includes(jId);
-          const isTimerExpired = nextCountdowns[jId] <= 1;
+      const nextCounts = { ...countdownsRef.current };
 
-          if (isQueueEmpty || isTimerExpired) {
-            // Green lane vehicle count reached 0 OR green timer expired:
-            // NOW PLAY BACKEND LOGIC TO DECIDE NEXT RED SIGNAL TO TURN GREEN!
-            const reason = isQueueEmpty ? 'Empty Queue (0 Cars)' : 'Timer Expired';
+      for (const jId of Object.keys(JUNCTIONS)) {
+        const isEmergencyAtThisJunction = ambulanceRef.current && 
+          (ambulanceRef.current.currentJunction || ambulanceRef.current.junction) === jId &&
+          ambulanceRef.current.progress < 100;
 
-            (async () => {
-              const res = await callBackendDecision({
-                networkVehicles,
-                ambulance: ambulance ? { junction: ambulance.junction, progress: ambulance.progress } : null,
-                activeSignals,
-                rotatingJunction: jId
-              });
-
-              if (res?.junctions?.[jId]) {
-                const jDecision = res.junctions[jId];
-                setActiveSignals((prevSignals) => ({
-                  ...prevSignals,
-                  [jId]: jDecision.activeDirection
-                }));
-                setCountdowns((prevCounts) => ({
-                  ...prevCounts,
-                  [jId]: jDecision.duration
-                }));
-                setLogs((prevLogs) => [
-                  `🔄 ${jId} [${reason}]: Backend AI switched to ${jDecision.activeDirection} (${jDecision.duration}s Green).`,
-                  ...prevLogs.slice(0, 9)
-                ]);
-              }
-            })();
-
-            nextCountdowns[jId] = 25; // temporary placeholder until backend response arrives
-          } else {
-            nextCountdowns[jId] -= 1;
-          }
+        // If junction is currently serving emergency ambulance, maintain green duration
+        if (isEmergencyAtThisJunction) {
+          nextCounts[jId] = 45;
+          continue;
         }
-        return nextCountdowns;
-      });
+
+        const isQueueEmpty = junctionsToRotate.includes(jId);
+        const isTimerExpired = nextCounts[jId] <= 1;
+
+        if (isQueueEmpty || isTimerExpired) {
+          // Green lane vehicle count reached 0 OR green timer expired:
+          // NOW PLAY BACKEND LOGIC TO DECIDE NEXT RED SIGNAL TO TURN GREEN!
+          const reason = isQueueEmpty ? 'Empty Queue (0 Cars)' : 'Timer Expired';
+
+          const res = await callBackendDecision({
+            networkVehicles: networkVehiclesRef.current,
+            ambulance: ambulanceRef.current ? {
+              junction: ambulanceRef.current.junction,
+              currentJunction: ambulanceRef.current.currentJunction || ambulanceRef.current.junction,
+              progress: ambulanceRef.current.progress
+            } : null,
+            activeSignals: activeSignalsRef.current,
+            rotatingJunction: jId
+          });
+
+          if (res?.junctions?.[jId]) {
+            const jDecision = res.junctions[jId];
+            activeSignalsRef.current = {
+              ...activeSignalsRef.current,
+              [jId]: jDecision.activeDirection
+            };
+            nextCounts[jId] = jDecision.duration;
+
+            setActiveSignals((prevSignals) => ({
+              ...prevSignals,
+              [jId]: jDecision.activeDirection
+            }));
+
+            setLogs((prevLogs) => [
+              `🔄 ${jId} [${reason}]: Backend AI selected ${jDecision.activeDirection} (${jDecision.duration}s Green).`,
+              ...prevLogs.slice(0, 9)
+            ]);
+          } else {
+            nextCounts[jId] = 15;
+          }
+        } else {
+          nextCounts[jId] = Math.max(0, nextCounts[jId] - 1);
+        }
+      }
+
+      countdownsRef.current = nextCounts;
+      setCountdowns(nextCounts);
+
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isMonitoring, activeSignals, networkVehicles, ambulance]);
+  }, [isMonitoring]);
 
   // Compute total cars in network across all 16 approaches
   const totalNetworkCars = Object.values(networkVehicles).reduce((acc, jCounts) => {
@@ -400,7 +562,7 @@ export default function App() {
         const r = (p - 33) / 33;
         return { x: 440, y: 130 + (310 - 130) * r };
       } else {
-        const r = (p - 66) / 34;
+        const r = Math.min(1, (p - 66) / 34);
         return { x: 440 + (600 - 440) * r, y: 310 };
       }
     } else if (ambulance.junction === 'J2') {
@@ -408,15 +570,15 @@ export default function App() {
         const r = p / 50;
         return { x: 440, y: 130 + (310 - 130) * r };
       } else {
-        const r = (p - 50) / 50;
+        const r = Math.min(1, (p - 50) / 50);
         return { x: 440 + (600 - 440) * r, y: 310 };
       }
-    } else {
-      if (p <= 60) {
-        const r = p / 60;
+    } else { // J3
+      if (p <= 50) {
+        const r = p / 50;
         return { x: 180 + (440 - 180) * r, y: 310 };
       } else {
-        const r = (p - 60) / 40;
+        const r = Math.min(1, (p - 50) / 50);
         return { x: 440 + (600 - 440) * r, y: 310 };
       }
     }
@@ -541,24 +703,39 @@ export default function App() {
               <line x1="180" y1="30" x2="180" y2="410" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
               <line x1="440" y1="30" x2="440" y2="410" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
 
-              {/* Glowing Ambulance Green Corridor Route */}
+              {/* Ambulance Corridor Path Guide & Active Preempted Segment */}
               {ambulance && (
-                <path
-                  d={
-                    ambulance.junction === 'J1'
-                      ? 'M 180 130 L 440 130 L 440 310 L 600 310'
-                      : ambulance.junction === 'J2'
-                      ? 'M 440 130 L 440 310 L 600 310'
-                      : 'M 180 310 L 440 310 L 600 310'
-                  }
-                  fill="none"
-                  stroke="#10b981"
-                  strokeWidth="8"
-                  strokeLinecap="round"
-                  strokeDasharray="10 6"
-                  className="animate-pulse"
-                  opacity="0.9"
-                />
+                <>
+                  {/* Faint Planned Route Line */}
+                  <path
+                    d={
+                      ambulance.junction === 'J1'
+                        ? 'M 180 130 L 440 130 L 440 310 L 600 310'
+                        : ambulance.junction === 'J2'
+                        ? 'M 440 130 L 440 310 L 600 310'
+                        : 'M 180 310 L 440 310 L 600 310'
+                    }
+                    fill="none"
+                    stroke="#334155"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                    strokeDasharray="6 6"
+                    opacity="0.5"
+                  />
+                  {/* Localized Active Emergency Segment (pulsing green ONLY where ambulance currently is!) */}
+                  {getActiveSegmentPath(ambulance) && (
+                    <path
+                      d={getActiveSegmentPath(ambulance)}
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth="8"
+                      strokeLinecap="round"
+                      strokeDasharray="10 6"
+                      className="animate-pulse"
+                      opacity="0.95"
+                    />
+                  )}
+                </>
               )}
 
               {/* CITY HOSPITAL (Connected to J4 East) */}
@@ -581,11 +758,16 @@ export default function App() {
                 const jCounts = networkVehicles[j.id];
                 const jTotal = Object.values(jCounts).reduce((a, b) => a + Number(b), 0);
 
-                // Check signal color for each of the 4 directions (RULE: 0 vehicles is ALWAYS RED)
-                const isNorthGreen = isMonitoring && activeDir === 'NORTH' && jCounts.north > 0;
-                const isSouthGreen = isMonitoring && activeDir === 'SOUTH' && jCounts.south > 0;
-                const isEastGreen  = isMonitoring && activeDir === 'EAST'  && jCounts.east > 0;
-                const isWestGreen  = isMonitoring && activeDir === 'WEST'  && jCounts.west > 0;
+                // Emergency check: if ambulance is currently at this junction, exit direction is green for ambulance!
+                const isEmergencyAtJunction = ambulance && 
+                  (ambulance.currentJunction || ambulance.junction) === j.id && 
+                  ambulance.progress < 100;
+
+                // Check signal color for each of the 4 directions (RULE: 0 vehicles is ALWAYS RED, unless emergency)
+                const isNorthGreen = isMonitoring && activeDir === 'NORTH' && (jCounts.north > 0 || (isEmergencyAtJunction && activeDir === 'NORTH'));
+                const isSouthGreen = isMonitoring && activeDir === 'SOUTH' && (jCounts.south > 0 || (isEmergencyAtJunction && activeDir === 'SOUTH'));
+                const isEastGreen  = isMonitoring && activeDir === 'EAST'  && (jCounts.east > 0 || (isEmergencyAtJunction && activeDir === 'EAST'));
+                const isWestGreen  = isMonitoring && activeDir === 'WEST'  && (jCounts.west > 0 || (isEmergencyAtJunction && activeDir === 'WEST'));
 
                 return (
                   <g
@@ -614,10 +796,18 @@ export default function App() {
                       {jTotal} cars
                     </text>
 
-                    {/* Active Timer badge (If 0 cars, displays ALL RED) */}
+                    {/* Active Timer badge (Emergency indicator, Standby ALL RED, or Countdown) */}
                     {isMonitoring && (
-                      <text x="0" y="20" textAnchor="middle" fill={jTotal === 0 ? '#ef4444' : '#38bdf8'} fontSize="9" fontWeight="bold" fontFamily="monospace">
-                        {jTotal === 0 ? 'ALL RED' : `${activeDir}:${jCountdown}s`}
+                      <text 
+                        x="0" 
+                        y="20" 
+                        textAnchor="middle" 
+                        fill={isEmergencyAtJunction ? '#ef4444' : (jTotal === 0 ? '#ef4444' : '#38bdf8')} 
+                        fontSize="9" 
+                        fontWeight="bold" 
+                        fontFamily="monospace"
+                      >
+                        {isEmergencyAtJunction ? `EMRG:${activeDir}` : (jTotal === 0 ? 'ALL RED' : `${activeDir}:${jCountdown}s`)}
                       </text>
                     )}
 
@@ -790,13 +980,13 @@ export default function App() {
               <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between text-xs font-mono">
                   <span className="text-slate-400">Ambulance Status:</span>
-                  <span className={`font-bold ${ambulance ? 'text-rose-400 animate-pulse' : 'text-slate-500'}`}>
-                    {ambulance ? `ACTIVE at ${ambulance.junction}` : 'NOT SPAWNED'}
+                  <span className={`font-bold ${ambulance ? (ambulance.progress >= 100 ? 'text-emerald-400' : 'text-rose-400 animate-pulse') : 'text-slate-500'}`}>
+                    {ambulance ? (ambulance.progress >= 100 ? 'ARRIVED AT HOSPITAL' : `AT ${ambulance.currentJunction || ambulance.junction} (${ambulance.progress}%)`) : 'NOT SPAWNED'}
                   </span>
                 </div>
                 {ambulance && (
                   <div className="text-[11px] font-mono text-emerald-400">
-                    Route: {ambulance.path.join(' ➔ ')}
+                    Route: {ambulance.path.map((node) => node === (ambulance.currentJunction || ambulance.junction) ? `▶ [${node}]` : node).join(' ➔ ')}
                   </div>
                 )}
               </div>
