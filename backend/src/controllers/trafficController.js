@@ -1,6 +1,11 @@
 const { 
   calculate16SignalNetworkDecision, 
-  evaluateSingleJunction 
+  evaluateSingleJunction,
+  evaluateSafeIntersection,
+  SAFE_PHASES,
+  SIGNAL_CONFIG,
+  PRIORITY_WEIGHTS,
+  MAX_WAIT_TIME
 } = require('../algorithms/trafficDecision');
 
 // Initial default vehicle counts for all 16 directional approaches
@@ -21,29 +26,48 @@ const getCurrentTraffic = (req, res) => {
     status: 'success',
     server: 'Node.js Express (Port 3000)',
     totalSignals: 16,
-    defaultVehicles: defaultNetworkTraffic
+    defaultVehicles: defaultNetworkTraffic,
+    safePhases: SAFE_PHASES,
+    signalConfig: SIGNAL_CONFIG
   });
 };
 
 /**
- * Controller to compute decisions for all 16 signals (or individual junction)
+ * Controller to compute decisions for standard 4-way intersection or 16-signal network
  * GET & POST /api/traffic/decision
  */
 const getTrafficDecision = (req, res) => {
   const payload = req.body || {};
 
-  // Check if request is for the 16-signal network (J1, J2, J3, J4 with directional counts)
-  const networkVehicles = payload.networkVehicles || payload.vehicles || defaultNetworkTraffic;
+  // Check if request is for single 4-way intersection with safe phases
+  const isSingleIntersection = 
+    payload.trafficData !== undefined || 
+    payload.north !== undefined || 
+    req.query?.north !== undefined;
 
-  // Support single junction directional query (north, south, east, west)
-  if (payload.north !== undefined || req.query?.north !== undefined) {
-    const singleCounts = {
+  if (isSingleIntersection) {
+    const trafficData = payload.trafficData || {
       north: payload.north ?? req.query?.north ?? 20,
       south: payload.south ?? req.query?.south ?? 15,
       east: payload.east ?? req.query?.east ?? 40,
       west: payload.west ?? req.query?.west ?? 10
     };
-    const decision = evaluateSingleJunction(singleCounts, payload.emergency || req.query?.emergency || null);
+
+    const emergency = payload.emergency || 
+                      payload.emergencyVehicle || 
+                      req.query?.emergency || 
+                      null;
+
+    const currentPhase = payload.currentPhase || 'NORTH_SOUTH';
+    const currentSignalState = payload.currentSignalState || 'GREEN';
+
+    const decision = evaluateSafeIntersection({
+      trafficData,
+      currentPhase,
+      currentSignalState,
+      emergency
+    });
+
     return res.status(200).json({
       status: 'success',
       server: 'Node.js Express (Port 3000)',
@@ -53,6 +77,7 @@ const getTrafficDecision = (req, res) => {
   }
 
   // Full 16-signal multi-junction decision calculation
+  const networkVehicles = payload.networkVehicles || payload.vehicles || defaultNetworkTraffic;
   const decision = calculate16SignalNetworkDecision({
     networkVehicles,
     ambulance: payload.ambulance || null,

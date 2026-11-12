@@ -12,24 +12,37 @@ import {
   Sliders,
   Hospital as HospitalIcon,
   Server,
-  Compass
+  Compass,
+  AlertTriangle,
+  ShieldCheck
 } from 'lucide-react';
 
 /**
  * ==============================================================================
- * SMART TRAFFIC MANAGEMENT SYSTEM (4 JUNCTIONS x 4 DIRECTIONS = 16 SIGNALS)
+ * SAFE ADAPTIVE TRAFFIC SIGNAL SYSTEM (16 SIGNALS - 4 JUNCTIONS x 4 DIRECTIONS)
  * ==============================================================================
- * Real-world 16-Signal Architecture:
- * - 4 Interconnected 4-Way Junctions (J1, J2, J3, J4)
- * - Each junction independently controls 4 directional signals (North, South, East, West)
- * - Total 16 Traffic Lights actively managed by Node.js backend
- * - Hospital Emergency Green Corridor dynamically clears the exact directional path
+ * Features:
+ * 1. Safe Signal Phases:
+ *    - Phase 1: NORTH_SOUTH (North & South Green, East & West Red)
+ *    - Phase 2: EAST_WEST (East & West Green, North & South Red)
+ *    - Conflicting directions are NEVER green simultaneously.
+ *    - All 4 directions are NEVER green simultaneously.
+ * 2. Deterministic Transitions:
+ *    - CURRENT GREEN -> YELLOW (3s) -> ALL RED (2s) -> NEXT SAFE GREEN
+ * 3. Priority Scoring:
+ *    - Priority = (vehicleCount * 1.0) + (waitingTime * 0.5) + (congestionLevel * 2.0)
+ * 4. Starvation Prevention:
+ *    - If waitingTime >= 60s, that direction's phase receives immediate emergency priority.
+ * 5. Dynamic Clamped Green Time:
+ *    - 15s <= greenTime <= 60s
+ * 6. Ambulance Emergency Preemption:
+ *    - Transitions safely to required corridor phase; returns to adaptive mode once cleared.
  * ==============================================================================
  */
 
 const API_BASE_URL = 'http://localhost:3000/api/traffic';
 
-// Map Coordinates & Configuration
+// Map Coordinates & Junction Configuration
 const JUNCTIONS = {
   J1: { id: 'J1', name: 'Junction 1', label: 'North-West (Grand Ave)', x: 180, y: 130 },
   J2: { id: 'J2', name: 'Junction 2', label: 'North-East (Metro Blvd)', x: 440, y: 130 },
@@ -37,7 +50,7 @@ const JUNCTIONS = {
   J4: { id: 'J4', name: 'Junction 4', label: 'South-East (Expressway)', x: 440, y: 310 },
 };
 
-// Fixed Hospital Location (connected to Junction 4 on the East)
+// Fixed Hospital Location (connected to Junction 4 East exit)
 const HOSPITAL = {
   id: 'HOSPITAL',
   name: 'City Hospital',
@@ -47,22 +60,45 @@ const HOSPITAL = {
 
 // Default initial vehicle counts for all 16 directional approaches
 const DEFAULT_NETWORK_VEHICLES = {
-  J1: { north: 25, south: 20, east: 15, west: 20 }, // Sum: 80
-  J2: { north: 15, south: 10, east: 15, west: 10 }, // Sum: 50
-  J3: { north: 5,  south: 4,  east: 3,  west: 3  }, // Sum: 15
-  J4: { north: 30, south: 25, east: 15, west: 30 }  // Sum: 100
+  J1: { north: 25, south: 20, east: 15, west: 20 },
+  J2: { north: 15, south: 10, east: 15, west: 10 },
+  J3: { north: 5,  south: 4,  east: 3,  west: 3  },
+  J4: { north: 30, south: 25, east: 15, west: 30 }
 };
 
-// Frontend styling dictionary based on backend tier levels
-const TIER_THEME = {
-  LOW: { color: '#10b981', badge: 'bg-emerald-500/20 text-emerald-400' },
-  MEDIUM: { color: '#06b6d4', badge: 'bg-cyan-500/20 text-cyan-400' },
-  HIGH: { color: '#f59e0b', badge: 'bg-amber-500/20 text-amber-400' },
-  VERY_HIGH: { color: '#ef4444', badge: 'bg-rose-500/20 text-rose-400' }
+const DEFAULT_WAITING_TIMES = {
+  J1: { north: 5, south: 5, east: 25, west: 20 },
+  J2: { north: 20, south: 15, east: 5, west: 5 },
+  J3: { north: 5, south: 5, east: 10, west: 10 },
+  J4: { north: 35, south: 30, east: 10, west: 10 }
+};
+
+// Safe Phase Definitions
+const SAFE_PHASES = {
+  NORTH_SOUTH: {
+    id: 'NORTH_SOUTH',
+    label: 'Phase 1: NORTH / SOUTH',
+    greenDirections: ['north', 'south'],
+    conflictingDirections: ['east', 'west']
+  },
+  EAST_WEST: {
+    id: 'EAST_WEST',
+    label: 'Phase 2: EAST / WEST',
+    greenDirections: ['east', 'west'],
+    conflictingDirections: ['north', 'south']
+  }
+};
+
+const SIGNAL_CONFIG = {
+  minGreenTime: 15,
+  maxGreenTime: 60,
+  yellowTime: 3,
+  allRedTime: 2,
+  maxWaitTime: 60
 };
 
 /**
- * Call Backend 16-Signal Decision API (/api/traffic/decision)
+ * Call Backend Decision API (/api/traffic/decision)
  */
 async function callBackendDecision(payload) {
   try {
@@ -111,62 +147,98 @@ function getActiveSegmentPath(ambulance) {
   return null;
 }
 
+/**
+ * Computes priority score for a direction:
+ * Priority = (vehicleCount * 1.0) + (waitingTime * 0.5) + (congestionLevel * 2.0)
+ */
+function computePriority(count, wait) {
+  const congestion = count > 50 ? 3 : count > 20 ? 2 : count > 0 ? 1 : 0;
+  return Math.round(((count * 1.0) + (wait * 0.5) + (congestion * 2.0)) * 10) / 10;
+}
+
 export default function App() {
-  // 1. Vehicle counts state for all 16 approaches (4 junctions x 4 directions)
+  // 1. Vehicles count state for all 16 approaches
   const [networkVehicles, setNetworkVehicles] = useState(DEFAULT_NETWORK_VEHICLES);
 
-  // 2. Currently selected junction for editing sliders (J1, J2, J3, J4)
+  // 2. Waiting times for all 16 approaches (seconds)
+  const [waitingTimes, setWaitingTimes] = useState(DEFAULT_WAITING_TIMES);
+
+  // 3. Currently selected junction for detailed controls
   const [selectedJunction, setSelectedJunction] = useState('J1');
 
-  // 3. Ambulance State: null when not placed, or object with junction and progress
+  // 4. Ambulance State
   const [ambulance, setAmbulance] = useState(null);
 
-  // 4. Live Monitoring submission state: false = setup mode, true = live monitoring active
+  // 5. Live Monitoring simulation state
   const [isMonitoring, setIsMonitoring] = useState(false);
 
-  // 5. Active directional green state for each junction: { J1: 'NORTH', J2: 'SOUTH', ... }
-  const [activeSignals, setActiveSignals] = useState({
-    J1: 'NORTH',
-    J2: 'EAST',
-    J3: 'NORTH',
-    J4: 'WEST'
+  // 6. Safe Phase state for each junction: 'NORTH_SOUTH' or 'EAST_WEST'
+  const [activePhases, setActivePhases] = useState({
+    J1: 'NORTH_SOUTH',
+    J2: 'EAST_WEST',
+    J3: 'NORTH_SOUTH',
+    J4: 'NORTH_SOUTH'
   });
 
-  // Countdown timer for each junction
+  // 7. Signal Transition State for each junction: 'GREEN' | 'YELLOW' | 'ALL_RED'
+  const [signalStates, setSignalStates] = useState({
+    J1: 'GREEN',
+    J2: 'GREEN',
+    J3: 'GREEN',
+    J4: 'GREEN'
+  });
+
+  // 8. Pending next phase if currently in transition (YELLOW or ALL_RED)
+  const [pendingPhases, setPendingPhases] = useState({
+    J1: null,
+    J2: null,
+    J3: null,
+    J4: null
+  });
+
+  // 9. Countdown timers for each junction
   const [countdowns, setCountdowns] = useState({
     J1: 25,
-    J2: 15,
+    J2: 20,
     J3: 15,
-    J4: 25
+    J4: 30
   });
 
   const [logs, setLogs] = useState([]);
-  const [backendStatus, setBackendStatus] = useState('connecting'); // 'connected' | 'offline'
+  const [backendStatus, setBackendStatus] = useState('connecting');
   const [backendData, setBackendData] = useState(null);
 
-  // Refs for real-time simulation interval to access latest state without interval recreation
+  // Refs for real-time simulation interval to avoid stale closures
   const networkVehiclesRef = useRef(networkVehicles);
   networkVehiclesRef.current = networkVehicles;
 
-  const activeSignalsRef = useRef(activeSignals);
-  activeSignalsRef.current = activeSignals;
+  const waitingTimesRef = useRef(waitingTimes);
+  waitingTimesRef.current = waitingTimes;
 
-  const ambulanceRef = useRef(ambulance);
-  ambulanceRef.current = ambulance;
+  const activePhasesRef = useRef(activePhases);
+  activePhasesRef.current = activePhases;
+
+  const signalStatesRef = useRef(signalStates);
+  signalStatesRef.current = signalStates;
+
+  const pendingPhasesRef = useRef(pendingPhases);
+  pendingPhasesRef.current = pendingPhases;
 
   const countdownsRef = useRef(countdowns);
   countdownsRef.current = countdowns;
 
+  const ambulanceRef = useRef(ambulance);
+  ambulanceRef.current = ambulance;
+
   // ============================================================================
-  // SYNC 16-SIGNAL DECISION WITH NODE.JS BACKEND (SETUP MODE ONLY)
+  // SYNC WITH NODE.JS BACKEND (SETUP MODE)
   // ============================================================================
   useEffect(() => {
-    // CRITICAL: While live monitoring is running, DO NOT call backend on vehicle reduction!
     if (isMonitoring) return;
 
     let isMounted = true;
 
-    async function syncDecision() {
+    async function syncBackend() {
       const data = await callBackendDecision({
         networkVehicles,
         ambulance: ambulance ? {
@@ -174,41 +246,26 @@ export default function App() {
           currentJunction: ambulance.currentJunction || ambulance.junction,
           progress: ambulance.progress
         } : null,
-        activeSignals
+        activeSignals: activePhases
       });
 
       if (isMounted) {
-        if (data && data.status === 'success') {
+        if (data && (data.status === 'success' || data.junctions)) {
           setBackendStatus('connected');
           setBackendData(data);
-
-          // Update active signals from backend calculation
-          if (data.junctions) {
-            const newActive = {};
-            const newCountdowns = {};
-            for (const [jId, jData] of Object.entries(data.junctions)) {
-              newActive[jId] = jData.activeDirection;
-              newCountdowns[jId] = jData.duration;
-            }
-            activeSignalsRef.current = newActive;
-            countdownsRef.current = newCountdowns;
-            setActiveSignals(newActive);
-            setCountdowns(newCountdowns);
-          }
         } else {
           setBackendStatus('offline');
         }
       }
     }
 
-    syncDecision();
+    syncBackend();
     return () => { isMounted = false; };
   }, [networkVehicles, ambulance?.junction, ambulance?.currentJunction, isMonitoring]);
 
   // ============================================================================
   // USER ACTION HANDLERS
   // ============================================================================
-  // Update vehicle count for a specific direction at a specific junction
   const handleDirectionChange = (junctionId, direction, count) => {
     const val = Math.max(0, Math.min(100, Number(count) || 0));
     setNetworkVehicles((prev) => {
@@ -224,7 +281,6 @@ export default function App() {
     });
   };
 
-  // Quick Presets
   const applyPreset = (presetName) => {
     let nextVehicles = DEFAULT_NETWORK_VEHICLES;
     if (presetName === 'BALANCED') {
@@ -246,7 +302,7 @@ export default function App() {
     networkVehiclesRef.current = nextVehicles;
   };
 
-  // Spawn Ambulance at random junction and call backend for corridor
+  // Spawn Ambulance
   const handleAddRandomAmbulance = async () => {
     const candidates = ['J1', 'J2', 'J3'];
     const randomJunction = candidates[Math.floor(Math.random() * candidates.length)];
@@ -266,97 +322,31 @@ export default function App() {
     setAmbulance(newAmb);
     ambulanceRef.current = newAmb;
 
-    const data = await callBackendDecision({
-      networkVehicles: networkVehiclesRef.current,
-      ambulance: {
-        junction: newAmb.junction,
-        currentJunction: newAmb.currentJunction,
-        progress: 0
-      },
-      activeSignals: activeSignalsRef.current
-    });
+    // Trigger immediate safe transition to required corridor phase at that junction
+    const exitDirections = { J1: 'EAST', J2: 'SOUTH', J3: 'EAST', J4: 'EAST' };
+    const requiredDir = exitDirections[randomJunction];
+    const requiredPhase = (requiredDir === 'NORTH' || requiredDir === 'SOUTH') ? 'NORTH_SOUTH' : 'EAST_WEST';
 
-    if (data && data.junctions) {
-      setBackendStatus('connected');
-      setBackendData(data);
-      const newActive = {};
-      const newCountdowns = {};
-      for (const [jId, jData] of Object.entries(data.junctions)) {
-        newActive[jId] = jData.activeDirection;
-        newCountdowns[jId] = jData.duration;
-      }
-      activeSignalsRef.current = newActive;
-      countdownsRef.current = newCountdowns;
-      setActiveSignals(newActive);
-      setCountdowns(newCountdowns);
-      setLogs((prev) => [
-        `🚨 Ambulance Dispatched at ${randomJunction}: Emergency GREEN granted at ${randomJunction} only! Other junctions continue AI adaptive logic.`,
-        ...prev.slice(0, 9)
-      ]);
-    }
+    setLogs((prev) => [
+      `🚨 EMERGENCY PREEMPTION: Ambulance at ${randomJunction}. Transitioning to safe phase ${requiredPhase} for clearance!`,
+      ...prev.slice(0, 9)
+    ]);
   };
 
   const handleClearAmbulance = async () => {
     setAmbulance(null);
     ambulanceRef.current = null;
-
-    const data = await callBackendDecision({
-      networkVehicles: networkVehiclesRef.current,
-      ambulance: null,
-      activeSignals: activeSignalsRef.current
-    });
-
-    if (data && data.junctions) {
-      setBackendStatus('connected');
-      setBackendData(data);
-      const newActive = {};
-      const newCountdowns = {};
-      for (const [jId, jData] of Object.entries(data.junctions)) {
-        newActive[jId] = jData.activeDirection;
-        newCountdowns[jId] = jData.duration;
-      }
-      activeSignalsRef.current = newActive;
-      countdownsRef.current = newCountdowns;
-      setActiveSignals(newActive);
-      setCountdowns(newCountdowns);
-      setLogs((prev) => [
-        `Ambulance Cleared: All 4 junctions restored to standard AI adaptive control.`,
-        ...prev.slice(0, 9)
-      ]);
-    }
+    setLogs((prev) => [
+      `Emergency Cleared: All junctions returned to NORMAL ADAPTIVE MODE.`,
+      ...prev.slice(0, 9)
+    ]);
   };
 
   // Toggle Live Monitoring
-  const handleToggleMonitoring = async () => {
-    const nextState = !isMonitoring;
-    setIsMonitoring(nextState);
-
-    if (nextState) {
-      const data = await callBackendDecision({
-        networkVehicles: networkVehiclesRef.current,
-        ambulance: ambulanceRef.current ? {
-          junction: ambulanceRef.current.junction,
-          currentJunction: ambulanceRef.current.currentJunction || ambulanceRef.current.junction,
-          progress: ambulanceRef.current.progress
-        } : null,
-        activeSignals: activeSignalsRef.current
-      });
-
-      if (data && data.junctions) {
-        setBackendStatus('connected');
-        setBackendData(data);
-        const newActive = {};
-        const newCountdowns = {};
-        for (const [jId, jData] of Object.entries(data.junctions)) {
-          newActive[jId] = jData.activeDirection;
-          newCountdowns[jId] = jData.duration;
-        }
-        activeSignalsRef.current = newActive;
-        countdownsRef.current = newCountdowns;
-        setActiveSignals(newActive);
-        setCountdowns(newCountdowns);
-        setLogs([`⚡ 16-Signal Live Monitoring Started across J1, J2, J3, J4.`]);
-      }
+  const handleToggleMonitoring = () => {
+    setIsMonitoring((prev) => !prev);
+    if (!isMonitoring) {
+      setLogs((prev) => [`⚡ Safe Adaptive Traffic Simulation Started across J1-J4.`, ...prev]);
     }
   };
 
@@ -364,22 +354,32 @@ export default function App() {
     setIsMonitoring(false);
     setNetworkVehicles(DEFAULT_NETWORK_VEHICLES);
     networkVehiclesRef.current = DEFAULT_NETWORK_VEHICLES;
+    setWaitingTimes(DEFAULT_WAITING_TIMES);
+    waitingTimesRef.current = DEFAULT_WAITING_TIMES;
     setAmbulance(null);
     ambulanceRef.current = null;
     setSelectedJunction('J1');
+    setSignalStates({ J1: 'GREEN', J2: 'GREEN', J3: 'GREEN', J4: 'GREEN' });
+    setPendingPhases({ J1: null, J2: null, J3: null, J4: null });
     setLogs([]);
   };
 
   // ============================================================================
-  // REAL-TIME 1-SECOND SIMULATION LOOP ACROSS 4 JUNCTIONS
+  // REAL-TIME 1-SECOND SIMULATION LOOP WITH DETERMINISTIC TRANSITIONS
   // ============================================================================
   useEffect(() => {
     if (!isMonitoring) return;
 
-    const timer = setInterval(async () => {
+    const timer = setInterval(() => {
       const currentAmb = ambulanceRef.current;
+      const currentVehicles = { ...networkVehiclesRef.current };
+      const currentWaits = { ...waitingTimesRef.current };
+      const currentPhases = { ...activePhasesRef.current };
+      const currentStates = { ...signalStatesRef.current };
+      const currentPending = { ...pendingPhasesRef.current };
+      const currentCounts = { ...countdownsRef.current };
 
-      // 1. Advance ambulance progress & handoff emergency green between junctions
+      // 1. Advance ambulance progress along corridor
       if (currentAmb && currentAmb.progress < 100) {
         const nextProgress = Math.min(100, currentAmb.progress + 2);
         const nextJunction = getAmbulanceCurrentJunction(currentAmb.junction, nextProgress);
@@ -393,158 +393,206 @@ export default function App() {
         ambulanceRef.current = updatedAmb;
         setAmbulance(updatedAmb);
 
-        // Junction transition: only the junction where ambulance has actually arrived gets green!
         if (nextJunction !== prevJunction) {
-          const res = await callBackendDecision({
-            networkVehicles: networkVehiclesRef.current,
-            ambulance: {
-              junction: updatedAmb.junction,
-              currentJunction: updatedAmb.currentJunction,
-              progress: updatedAmb.progress
-            },
-            activeSignals: activeSignalsRef.current
-          });
-
-          if (res?.junctions) {
-            setBackendData(res);
-            const newActive = { ...activeSignalsRef.current };
-            const newCounts = { ...countdownsRef.current };
-            for (const [jId, jData] of Object.entries(res.junctions)) {
-              newActive[jId] = jData.activeDirection;
-              newCounts[jId] = jData.duration;
-            }
-            activeSignalsRef.current = newActive;
-            countdownsRef.current = newCounts;
-            setActiveSignals(newActive);
-            setCountdowns(newCounts);
-
-            if (nextJunction === 'HOSPITAL') {
-              setLogs((prev) => [
-                `🏥 Ambulance reached City Hospital safely! All 4 junctions running AI adaptive logic.`,
-                ...prev.slice(0, 9)
-              ]);
-            } else {
-              setLogs((prev) => [
-                `🚨 Ambulance arrived at ${nextJunction}: Emergency GREEN granted! Junction ${prevJunction} returned to normal AI adaptive logic.`,
-                ...prev.slice(0, 9)
-              ]);
-            }
+          if (nextJunction === 'HOSPITAL') {
+            setLogs((prev) => [
+              `🏥 Ambulance arrived safely at City Hospital! System returned to NORMAL ADAPTIVE MODE.`,
+              ...prev.slice(0, 9)
+            ]);
+          } else {
+            setLogs((prev) => [
+              `🚨 Ambulance reached ${nextJunction}! Emergency preemption requested; ${prevJunction} returned to adaptive mode.`,
+              ...prev.slice(0, 9)
+            ]);
           }
         }
       }
 
-      // 2. Realistic Vehicle Flow: Dynamically reduce cars on active GREEN lanes
-      // (CRITICAL: ZERO backend API calls while vehicles are simply decreasing)
-      const junctionsToRotate = [];
-      const updatedVehicles = { ...networkVehiclesRef.current };
+      // 2. Realistic Vehicle Flow on active GREEN phases
+      // Conflicting red directions accumulate waiting time (+1s)
+      // Active green directions discharge cars and reset waiting time to 0
       let hasVehicleChanges = false;
 
-      for (const [jId, activeDir] of Object.entries(activeSignalsRef.current)) {
-        if (!activeDir || activeDir === 'ALL_RED') continue;
+      for (const jId of Object.keys(JUNCTIONS)) {
+        const phase = currentPhases[jId];
+        const state = currentStates[jId];
+        const greenDirs = state === 'GREEN' ? SAFE_PHASES[phase].greenDirections : [];
 
-        const isEmergencyAtThisJunction = ambulanceRef.current && 
-          (ambulanceRef.current.currentJunction || ambulanceRef.current.junction) === jId &&
-          ambulanceRef.current.progress < 100;
-
-        const dirKey = activeDir.toLowerCase();
-        const currentCount = updatedVehicles[jId]?.[dirKey] ?? 0;
-
-        if (currentCount > 0) {
-          // Random realistic discharge rate: 75% chance of 1-2 cars passing through green per second
-          const discharge = Math.random() < 0.75 ? (Math.random() < 0.35 ? 2 : 1) : 0;
-          if (discharge > 0) {
-            hasVehicleChanges = true;
-            const newCount = Math.max(0, currentCount - discharge);
-            updatedVehicles[jId] = {
-              ...updatedVehicles[jId],
-              [dirKey]: newCount
-            };
-
-            // If queue reaches 0 and NOT in emergency preemption -> trigger backend rotation!
-            if (newCount === 0 && !isEmergencyAtThisJunction) {
-              junctionsToRotate.push(jId);
+        for (const dir of ['north', 'south', 'east', 'west']) {
+          if (greenDirs.includes(dir)) {
+            // Flowing on Green: discharge cars & reset wait time
+            currentWaits[jId][dir] = 0;
+            const count = currentVehicles[jId][dir];
+            if (count > 0) {
+              const discharge = Math.random() < 0.75 ? (Math.random() < 0.35 ? 2 : 1) : 0;
+              if (discharge > 0) {
+                hasVehicleChanges = true;
+                currentVehicles[jId][dir] = Math.max(0, count - discharge);
+              }
             }
-          }
-        } else {
-          // Already 0 cars on green and not emergency -> rotate!
-          if (!isEmergencyAtThisJunction) {
-            junctionsToRotate.push(jId);
+          } else {
+            // Stopped on Red or Yellow/All-Red: accumulate waiting time
+            if (currentVehicles[jId][dir] > 0) {
+              currentWaits[jId][dir] = (currentWaits[jId][dir] || 0) + 1;
+            }
           }
         }
       }
 
       if (hasVehicleChanges) {
-        networkVehiclesRef.current = updatedVehicles;
-        setNetworkVehicles(updatedVehicles);
+        networkVehiclesRef.current = currentVehicles;
+        setNetworkVehicles({ ...currentVehicles });
       }
+      waitingTimesRef.current = currentWaits;
+      setWaitingTimes({ ...currentWaits });
 
-      // 3. Decrement countdowns & execute backend logic ONLY when green queue reaches 0 OR countdown expires
-      const nextCounts = { ...countdownsRef.current };
-
+      // 3. Process Deterministic Clearance Transitions & Dynamic Phase Selection
       for (const jId of Object.keys(JUNCTIONS)) {
+        const currentState = currentStates[jId];
+        const currentPhase = currentPhases[jId];
+
+        // Decrement timer
+        currentCounts[jId] = Math.max(0, currentCounts[jId] - 1);
+
+        // Check if countdown expired OR active green queue emptied
+        const greenDirs = SAFE_PHASES[currentPhase].greenDirections;
+        const greenCarsSum = greenDirs.reduce((sum, d) => sum + currentVehicles[jId][d], 0);
+        const isQueueEmpty = currentState === 'GREEN' && greenCarsSum === 0;
+        const isTimerExpired = currentCounts[jId] <= 0;
+
+        // Emergency check for this specific junction
         const isEmergencyAtThisJunction = ambulanceRef.current && 
           (ambulanceRef.current.currentJunction || ambulanceRef.current.junction) === jId &&
           ambulanceRef.current.progress < 100;
 
-        // If junction is currently serving emergency ambulance, maintain green duration
-        if (isEmergencyAtThisJunction) {
-          nextCounts[jId] = 45;
-          continue;
-        }
+        const exitDirections = { J1: 'EAST', J2: 'SOUTH', J3: 'EAST', J4: 'EAST' };
+        const emergencyExitDir = exitDirections[jId];
+        const emergencyRequiredPhase = (emergencyExitDir === 'NORTH' || emergencyExitDir === 'SOUTH') ? 'NORTH_SOUTH' : 'EAST_WEST';
 
-        const isQueueEmpty = junctionsToRotate.includes(jId);
-        const isTimerExpired = nextCounts[jId] <= 1;
-
-        if (isQueueEmpty || isTimerExpired) {
-          // Green lane vehicle count reached 0 OR green timer expired:
-          // NOW PLAY BACKEND LOGIC TO DECIDE NEXT RED SIGNAL TO TURN GREEN!
-          const reason = isQueueEmpty ? 'Empty Queue (0 Cars)' : 'Timer Expired';
-
-          const res = await callBackendDecision({
-            networkVehicles: networkVehiclesRef.current,
-            ambulance: ambulanceRef.current ? {
-              junction: ambulanceRef.current.junction,
-              currentJunction: ambulanceRef.current.currentJunction || ambulanceRef.current.junction,
-              progress: ambulanceRef.current.progress
-            } : null,
-            activeSignals: activeSignalsRef.current,
-            rotatingJunction: jId
-          });
-
-          if (res?.junctions?.[jId]) {
-            const jDecision = res.junctions[jId];
-            activeSignalsRef.current = {
-              ...activeSignalsRef.current,
-              [jId]: jDecision.activeDirection
-            };
-            nextCounts[jId] = jDecision.duration;
-
-            setActiveSignals((prevSignals) => ({
-              ...prevSignals,
-              [jId]: jDecision.activeDirection
-            }));
-
-            setLogs((prevLogs) => [
-              `🔄 ${jId} [${reason}]: Backend AI selected ${jDecision.activeDirection} (${jDecision.duration}s Green).`,
-              ...prevLogs.slice(0, 9)
-            ]);
-          } else {
-            nextCounts[jId] = 15;
+        // State Machine Transition Logic
+        if (currentState === 'YELLOW') {
+          if (isTimerExpired) {
+            // Step 2: YELLOW -> ALL RED clearance (2s)
+            currentStates[jId] = 'ALL_RED';
+            currentCounts[jId] = SIGNAL_CONFIG.allRedTime;
+            setLogs((prev) => [`🛑 ${jId}: All-Red clearance interval active (2s). Intersection cleared.`, ...prev.slice(0, 9)]);
           }
-        } else {
-          nextCounts[jId] = Math.max(0, nextCounts[jId] - 1);
+        } else if (currentState === 'ALL_RED') {
+          if (isTimerExpired) {
+            // Step 3: ALL RED -> NEXT SAFE GREEN PHASE
+            const nextPhase = currentPending[jId] || (currentPhase === 'NORTH_SOUTH' ? 'EAST_WEST' : 'NORTH_SOUTH');
+            currentPhases[jId] = nextPhase;
+            currentStates[jId] = 'GREEN';
+            currentPending[jId] = null;
+
+            // Compute dynamic green duration for the new phase
+            const phaseGreenDirs = SAFE_PHASES[nextPhase].greenDirections;
+            const phasePriority = phaseGreenDirs.reduce((sum, d) => {
+              return sum + computePriority(currentVehicles[jId][d], currentWaits[jId][d]);
+            }, 0);
+            const dynamicTime = Math.min(
+              SIGNAL_CONFIG.maxGreenTime, 
+              Math.max(SIGNAL_CONFIG.minGreenTime, Math.round(SIGNAL_CONFIG.minGreenTime + (phasePriority * 0.5)))
+            );
+
+            currentCounts[jId] = isEmergencyAtThisJunction ? 45 : dynamicTime;
+            setLogs((prev) => [
+              `🟢 ${jId}: Transition complete! Safe Phase ${nextPhase} is now GREEN (${currentCounts[jId]}s).`,
+              ...prev.slice(0, 9)
+            ]);
+          }
+        } else if (currentState === 'GREEN') {
+          // If emergency active and conflicting phase is currently green, trigger yellow clearance immediately!
+          if (isEmergencyAtThisJunction && currentPhase !== emergencyRequiredPhase) {
+            currentStates[jId] = 'YELLOW';
+            currentPending[jId] = emergencyRequiredPhase;
+            currentCounts[jId] = SIGNAL_CONFIG.yellowTime;
+            setLogs((prev) => [
+              `🚑 ${jId}: Emergency Preemption! Switching to YELLOW (3s) before granting ${emergencyRequiredPhase} GREEN.`,
+              ...prev.slice(0, 9)
+            ]);
+            continue;
+          }
+
+          if (isQueueEmpty || isTimerExpired) {
+            // Decide the best next phase:
+            let targetPhase = currentPhase;
+            let reason = '';
+
+            if (isEmergencyAtThisJunction) {
+              targetPhase = emergencyRequiredPhase;
+              reason = 'Emergency Corridor Preemption';
+            } else {
+              // Starvation Prevention Check: has any direction waited >= 60s?
+              let starvedDir = null;
+              for (const dir of ['north', 'south', 'east', 'west']) {
+                if (currentWaits[jId][dir] >= SIGNAL_CONFIG.maxWaitTime && currentVehicles[jId][dir] > 0) {
+                  starvedDir = dir;
+                  break;
+                }
+              }
+
+              if (starvedDir) {
+                targetPhase = (starvedDir === 'north' || starvedDir === 'south') ? 'NORTH_SOUTH' : 'EAST_WEST';
+                reason = `Starvation Prevention (${starvedDir.toUpperCase()} waited ${currentWaits[jId][starvedDir]}s)`;
+              } else {
+                // Priority Score Comparison
+                const nsPriority = computePriority(currentVehicles[jId].north, currentWaits[jId].north) +
+                                   computePriority(currentVehicles[jId].south, currentWaits[jId].south);
+                const ewPriority = computePriority(currentVehicles[jId].east, currentWaits[jId].east) +
+                                   computePriority(currentVehicles[jId].west, currentWaits[jId].west);
+
+                targetPhase = nsPriority >= ewPriority ? 'NORTH_SOUTH' : 'EAST_WEST';
+                reason = `Adaptive Priority (NS: ${nsPriority} vs EW: ${ewPriority})`;
+              }
+            }
+
+            if (targetPhase !== currentPhase) {
+              // Step 1: CURRENT GREEN -> YELLOW clearance (3s)
+              currentStates[jId] = 'YELLOW';
+              currentPending[jId] = targetPhase;
+              currentCounts[jId] = SIGNAL_CONFIG.yellowTime;
+              setLogs((prev) => [
+                `⚠️ ${jId} [${reason}]: Initiating safe transition to ${targetPhase}. Yellow clearance (3s).`,
+                ...prev.slice(0, 9)
+              ]);
+            } else {
+              // Same phase maintained: recalculate dynamic green duration
+              const phasePriority = SAFE_PHASES[targetPhase].greenDirections.reduce((sum, d) => {
+                return sum + computePriority(currentVehicles[jId][d], currentWaits[jId][d]);
+              }, 0);
+              const dynamicTime = Math.min(
+                SIGNAL_CONFIG.maxGreenTime, 
+                Math.max(SIGNAL_CONFIG.minGreenTime, Math.round(SIGNAL_CONFIG.minGreenTime + (phasePriority * 0.5)))
+              );
+              currentCounts[jId] = isEmergencyAtThisJunction ? 45 : dynamicTime;
+              setLogs((prev) => [
+                `🔄 ${jId} [${reason}]: Extended Phase ${targetPhase} GREEN (${currentCounts[jId]}s).`,
+                ...prev.slice(0, 9)
+              ]);
+            }
+          }
         }
       }
 
-      countdownsRef.current = nextCounts;
-      setCountdowns(nextCounts);
+      signalStatesRef.current = currentStates;
+      setSignalStates({ ...currentStates });
+
+      activePhasesRef.current = currentPhases;
+      setActivePhases({ ...currentPhases });
+
+      pendingPhasesRef.current = currentPending;
+      setPendingPhases({ ...currentPending });
+
+      countdownsRef.current = currentCounts;
+      setCountdowns({ ...currentCounts });
 
     }, 1000);
 
     return () => clearInterval(timer);
   }, [isMonitoring]);
 
-  // Compute total cars in network across all 16 approaches
+  // Compute total network cars
   const totalNetworkCars = Object.values(networkVehicles).reduce((acc, jCounts) => {
     return acc + Object.values(jCounts).reduce((a, b) => a + Number(b), 0);
   }, 0);
@@ -586,16 +634,17 @@ export default function App() {
 
   const ambCoords = getAmbulanceCoordinates();
 
-  // Helper to get tier styling
-  const getTierDetails = (count) => {
-    if (count <= 19) return { name: 'Low', greenTime: 15, ...TIER_THEME.LOW };
-    if (count <= 50) return { name: 'Medium', greenTime: 25, ...TIER_THEME.MEDIUM };
-    if (count <= 80) return { name: 'High', greenTime: 35, ...TIER_THEME.HIGH };
-    return { name: 'Very High', greenTime: 45, ...TIER_THEME.VERY_HIGH };
-  };
-
   const selectedCounts = networkVehicles[selectedJunction] || { north: 0, south: 0, east: 0, west: 0 };
+  const selectedWaits = waitingTimes[selectedJunction] || { north: 0, south: 0, east: 0, west: 0 };
   const selectedTotal = Object.values(selectedCounts).reduce((a, b) => a + Number(b), 0);
+  const selectedPhase = activePhases[selectedJunction];
+  const selectedState = signalStates[selectedJunction];
+  const selectedTimer = countdowns[selectedJunction];
+
+  const nsScore = computePriority(selectedCounts.north, selectedWaits.north) +
+                  computePriority(selectedCounts.south, selectedWaits.south);
+  const ewScore = computePriority(selectedCounts.east, selectedWaits.east) +
+                  computePriority(selectedCounts.west, selectedWaits.west);
 
   // ============================================================================
   // USER INTERFACE (JSX)
@@ -611,10 +660,10 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
-                Smart Traffic System <span className="text-cyan-400 font-mono text-sm">(16 Traffic Signals)</span>
+                Safe Adaptive Traffic System <span className="text-cyan-400 font-mono text-sm">(Safe Opposing Phases)</span>
               </h1>
               <p className="text-[11px] text-slate-400">
-                4 Junctions &bull; 4 Directions Each (North, South, East, West) &bull; Hospital Green Corridor
+                Phase 1 (North/South) &bull; Phase 2 (East/West) &bull; Deterministic Yellow/All-Red Clearance
               </p>
             </div>
           </div>
@@ -641,7 +690,7 @@ export default function App() {
               }`}
             >
               <span className={`w-2 h-2 rounded-full ${isMonitoring ? 'bg-emerald-400 animate-ping' : 'bg-cyan-400'}`} />
-              {isMonitoring ? '16 SIGNALS ACTIVE' : 'SETUP MODE'}
+              {isMonitoring ? 'SAFE PHASES ACTIVE' : 'SETUP MODE'}
             </span>
 
             <button
@@ -656,24 +705,60 @@ export default function App() {
       </header>
 
       {/* Main Container */}
-      <main className="max-w-6xl mx-auto w-full p-4 sm:p-6 space-y-6 flex-1">
+      <main className="max-w-6xl mx-auto w-full p-4 sm:p-6 space-y-5 flex-1">
         
-        {/* INTERACTIVE 2D SVG MAP SHOWING ALL 16 TRAFFIC SIGNALS */}
+        {/* Prominent Mode Banner: NORMAL ADAPTIVE MODE vs EMERGENCY PREEMPTION MODE */}
+        {ambulance && ambulance.progress < 100 ? (
+          <div className="bg-rose-950/40 border-2 border-rose-500/60 text-rose-200 px-4 py-3 rounded-2xl flex items-center justify-between font-mono text-xs shadow-xl animate-pulse">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-rose-500/20 border border-rose-500 flex items-center justify-center">
+                <Siren className="w-5 h-5 text-rose-400" />
+              </div>
+              <div>
+                <span className="font-black text-sm tracking-wider text-rose-400 block">
+                  🚑 EMERGENCY PREEMPTION MODE ACTIVE
+                </span>
+                <span className="text-[11px] text-slate-300">
+                  Ambulance detected at {ambulance.currentJunction || ambulance.junction}. Safe exit corridor phase preempted via deterministic clearance.
+                </span>
+              </div>
+            </div>
+            <span className="bg-rose-500/30 text-rose-300 px-3 py-1 rounded-lg border border-rose-500/50 font-bold">
+              PREEMPTION ENGAGED
+            </span>
+          </div>
+        ) : (
+          <div className="bg-emerald-950/20 border border-emerald-500/30 text-emerald-300 px-4 py-2.5 rounded-2xl flex items-center justify-between font-mono text-xs shadow-md">
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span className="font-bold tracking-wider text-white">NORMAL ADAPTIVE MODE</span>
+              <span className="text-slate-400 text-[11px]">&bull; Priority Formula Active &bull; Starvation Prevention &bull; No Conflicting Greens</span>
+            </div>
+            <span className="bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded border border-emerald-500/30 font-bold text-[10px]">
+              SAFE PHASES (1 &amp; 2)
+            </span>
+          </div>
+        )}
+
+        {/* INTERACTIVE 2D SVG MAP SHOWING PREDEFINED SAFE PHASES */}
         <section className="rounded-2xl bg-[#0b1329] border border-slate-800 p-4 sm:p-5 shadow-2xl relative overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 mb-3 border-b border-slate-800/80 gap-2">
             <div>
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
                 <Activity className="w-4 h-4 text-cyan-400" />
-                Live 16-Signal Traffic Network (4 Approaches Per Junction)
+                Live 4-Way Intersection Grid (Safe Predefined Phases)
               </h2>
               <p className="text-xs text-slate-400">
-                Each junction has 4 directional traffic lights &bull; Green shows active flowing lane with countdown timer
+                Phase 1 = North/South Green (East/West Red) &bull; Phase 2 = East/West Green (North/South Red) &bull; Yellow (3s) &bull; All-Red (2s)
               </p>
             </div>
 
             <div className="flex items-center gap-4 text-xs font-mono text-slate-400">
               <span className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span> Green = Flowing
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-pulse"></span> Yellow = Clearance (3s)
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-rose-500"></span> Red = Stopped
@@ -703,10 +788,9 @@ export default function App() {
               <line x1="180" y1="30" x2="180" y2="410" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
               <line x1="440" y1="30" x2="440" y2="410" stroke="#f1c40f" strokeWidth="2" strokeDasharray="8 8" opacity="0.6" />
 
-              {/* Ambulance Corridor Path Guide & Active Preempted Segment */}
+              {/* Ambulance Route Guide & Active Preempted Segment */}
               {ambulance && (
                 <>
-                  {/* Faint Planned Route Line */}
                   <path
                     d={
                       ambulance.junction === 'J1'
@@ -722,7 +806,6 @@ export default function App() {
                     strokeDasharray="6 6"
                     opacity="0.5"
                   />
-                  {/* Localized Active Emergency Segment (pulsing green ONLY where ambulance currently is!) */}
                   {getActiveSegmentPath(ambulance) && (
                     <path
                       d={getActiveSegmentPath(ambulance)}
@@ -738,7 +821,7 @@ export default function App() {
                 </>
               )}
 
-              {/* CITY HOSPITAL (Connected to J4 East) */}
+              {/* CITY HOSPITAL */}
               <g transform={`translate(${HOSPITAL.x}, ${HOSPITAL.y})`}>
                 <rect x="-42" y="-35" width="84" height="70" rx="10" fill="#1e1b4b" stroke="#6366f1" strokeWidth="2.5" />
                 <HospitalIcon x="-14" y="-24" width="28" height="28" className="text-rose-400" color="#f43f5e" />
@@ -750,24 +833,28 @@ export default function App() {
                 </text>
               </g>
 
-              {/* THE FOUR JUNCTIONS WITH 4 DIRECTIONAL SIGNALS EACH (TOTAL 16 LIGHTS) */}
+              {/* THE FOUR JUNCTIONS WITH PREDEFINED SAFE PHASES */}
               {Object.values(JUNCTIONS).map((j) => {
                 const isSelected = selectedJunction === j.id;
-                const activeDir = activeSignals[j.id];
+                const phase = activePhases[j.id];
+                const state = signalStates[j.id];
                 const jCountdown = countdowns[j.id];
                 const jCounts = networkVehicles[j.id];
                 const jTotal = Object.values(jCounts).reduce((a, b) => a + Number(b), 0);
 
-                // Emergency check: if ambulance is currently at this junction, exit direction is green for ambulance!
+                // Emergency status for this junction
                 const isEmergencyAtJunction = ambulance && 
                   (ambulance.currentJunction || ambulance.junction) === j.id && 
                   ambulance.progress < 100;
 
-                // Check signal color for each of the 4 directions (RULE: 0 vehicles is ALWAYS RED, unless emergency)
-                const isNorthGreen = isMonitoring && activeDir === 'NORTH' && (jCounts.north > 0 || (isEmergencyAtJunction && activeDir === 'NORTH'));
-                const isSouthGreen = isMonitoring && activeDir === 'SOUTH' && (jCounts.south > 0 || (isEmergencyAtJunction && activeDir === 'SOUTH'));
-                const isEastGreen  = isMonitoring && activeDir === 'EAST'  && (jCounts.east > 0 || (isEmergencyAtJunction && activeDir === 'EAST'));
-                const isWestGreen  = isMonitoring && activeDir === 'WEST'  && (jCounts.west > 0 || (isEmergencyAtJunction && activeDir === 'WEST'));
+                // Determine signal colors strictly from predefined safe phases
+                const isNSActive = phase === 'NORTH_SOUTH';
+                const isEWActive = phase === 'EAST_WEST';
+
+                const northColor = state === 'ALL_RED' ? '#ef4444' : (isNSActive ? (state === 'YELLOW' ? '#eab308' : '#10b981') : '#ef4444');
+                const southColor = state === 'ALL_RED' ? '#ef4444' : (isNSActive ? (state === 'YELLOW' ? '#eab308' : '#10b981') : '#ef4444');
+                const eastColor  = state === 'ALL_RED' ? '#ef4444' : (isEWActive ? (state === 'YELLOW' ? '#eab308' : '#10b981') : '#ef4444');
+                const westColor  = state === 'ALL_RED' ? '#ef4444' : (isEWActive ? (state === 'YELLOW' ? '#eab308' : '#10b981') : '#ef4444');
 
                 return (
                   <g
@@ -778,61 +865,65 @@ export default function App() {
                   >
                     {/* Intersection Box */}
                     <rect
-                      x="-40"
-                      y="-40"
-                      width="80"
-                      height="80"
+                      x="-42"
+                      y="-42"
+                      width="84"
+                      height="84"
                       rx="8"
                       fill="#111c33"
-                      stroke={isSelected ? '#06b6d4' : '#334155'}
+                      stroke={isSelected ? '#06b6d4' : (state === 'YELLOW' ? '#eab308' : state === 'ALL_RED' ? '#ef4444' : '#334155')}
                       strokeWidth={isSelected ? '3' : '1.5'}
                     />
 
                     {/* Junction Label & Total Cars */}
-                    <text x="0" y="-8" textAnchor="middle" fill="#ffffff" fontSize="13" fontWeight="bold" fontFamily="monospace">
+                    <text x="0" y="-10" textAnchor="middle" fill="#ffffff" fontSize="13" fontWeight="bold" fontFamily="monospace">
                       {j.id}
                     </text>
-                    <text x="0" y="6" textAnchor="middle" fill="#94a3b8" fontSize="9" fontFamily="monospace">
+                    <text x="0" y="4" textAnchor="middle" fill="#94a3b8" fontSize="8" fontFamily="monospace">
                       {jTotal} cars
                     </text>
 
-                    {/* Active Timer badge (Emergency indicator, Standby ALL RED, or Countdown) */}
+                    {/* Active Phase Badge / Timer */}
                     {isMonitoring && (
                       <text 
                         x="0" 
-                        y="20" 
+                        y="18" 
                         textAnchor="middle" 
-                        fill={isEmergencyAtJunction ? '#ef4444' : (jTotal === 0 ? '#ef4444' : '#38bdf8')} 
-                        fontSize="9" 
+                        fill={isEmergencyAtJunction ? '#f43f5e' : (state === 'YELLOW' ? '#eab308' : state === 'ALL_RED' ? '#ef4444' : '#38bdf8')} 
+                        fontSize="8" 
                         fontWeight="bold" 
                         fontFamily="monospace"
                       >
-                        {isEmergencyAtJunction ? `EMRG:${activeDir}` : (jTotal === 0 ? 'ALL RED' : `${activeDir}:${jCountdown}s`)}
+                        {state === 'ALL_RED' 
+                          ? `ALL-RED:${jCountdown}s` 
+                          : state === 'YELLOW' 
+                          ? `YEL:${jCountdown}s` 
+                          : `${phase === 'NORTH_SOUTH' ? 'P1(NS)' : 'P2(EW)'}:${jCountdown}s`}
                       </text>
                     )}
 
-                    {/* 4 DIRECTIONAL TRAFFIC LIGHT HEADS (16 LIGHTS IN TOTAL) */}
+                    {/* 4 DIRECTIONAL TRAFFIC LIGHTS (NEVER CONFLICTING) */}
                     
                     {/* 1. NORTH LIGHT (Top) */}
-                    <circle cx="0" cy="-32" r="7" fill={isNorthGreen ? '#10b981' : '#ef4444'} className={isNorthGreen ? 'animate-pulse' : ''} />
+                    <circle cx="0" cy="-32" r="7" fill={northColor} className={northColor !== '#ef4444' ? 'animate-pulse' : ''} />
                     <text x="0" y="-43" textAnchor="middle" fill="#cbd5e1" fontSize="8" fontWeight="bold" fontFamily="monospace">
                       N:{jCounts.north}
                     </text>
 
                     {/* 2. SOUTH LIGHT (Bottom) */}
-                    <circle cx="0" cy="32" r="7" fill={isSouthGreen ? '#10b981' : '#ef4444'} className={isSouthGreen ? 'animate-pulse' : ''} />
+                    <circle cx="0" cy="32" r="7" fill={southColor} className={southColor !== '#ef4444' ? 'animate-pulse' : ''} />
                     <text x="0" y="47" textAnchor="middle" fill="#cbd5e1" fontSize="8" fontWeight="bold" fontFamily="monospace">
                       S:{jCounts.south}
                     </text>
 
                     {/* 3. WEST LIGHT (Left) */}
-                    <circle cx="-32" cy="0" r="7" fill={isWestGreen ? '#10b981' : '#ef4444'} className={isWestGreen ? 'animate-pulse' : ''} />
+                    <circle cx="-32" cy="0" r="7" fill={westColor} className={westColor !== '#ef4444' ? 'animate-pulse' : ''} />
                     <text x="-44" y="3" textAnchor="end" fill="#cbd5e1" fontSize="8" fontWeight="bold" fontFamily="monospace">
                       W:{jCounts.west}
                     </text>
 
                     {/* 4. EAST LIGHT (Right) */}
-                    <circle cx="32" cy="0" r="7" fill={isEastGreen ? '#10b981' : '#ef4444'} className={isEastGreen ? 'animate-pulse' : ''} />
+                    <circle cx="32" cy="0" r="7" fill={eastColor} className={eastColor !== '#ef4444' ? 'animate-pulse' : ''} />
                     <text x="44" y="3" textAnchor="start" fill="#cbd5e1" fontSize="8" fontWeight="bold" fontFamily="monospace">
                       E:{jCounts.east}
                     </text>
@@ -855,10 +946,10 @@ export default function App() {
           </div>
         </section>
 
-        {/* 16-SIGNAL CONTROLLER (4 APPROACHES FOR SELECTED JUNCTION) */}
+        {/* CONTROLLER SECTION: PHASE MONITOR & APPROACH SLIDERS */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           
-          {/* DIRECTIONAL VEHICLE MANAGEMENT (SLIDERS) */}
+          {/* DIRECTIONAL VEHICLE MANAGEMENT (SLIDERS & PRIORITY SCORES) */}
           <section className="md:col-span-2 rounded-2xl bg-[#0b1329] border border-slate-800 p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
               <div>
@@ -866,7 +957,7 @@ export default function App() {
                   <Sliders className="w-4 h-4 text-cyan-400" />
                   Control Approaches for: <span className="text-cyan-400 font-mono">{selectedJunction}</span> ({JUNCTIONS[selectedJunction].label})
                 </h3>
-                <span className="text-xs text-slate-400">Total Cars at {selectedJunction}: {selectedTotal} vehicles</span>
+                <span className="text-xs text-slate-400">Total Waiting at {selectedJunction}: {selectedTotal} vehicles</span>
               </div>
               
               {/* Presets */}
@@ -897,6 +988,8 @@ export default function App() {
               {Object.values(JUNCTIONS).map((j) => {
                 const total = Object.values(networkVehicles[j.id]).reduce((a, b) => a + Number(b), 0);
                 const isSelected = selectedJunction === j.id;
+                const ph = activePhases[j.id];
+                const st = signalStates[j.id];
                 return (
                   <button
                     key={j.id}
@@ -908,25 +1001,69 @@ export default function App() {
                     }`}
                   >
                     <span>{j.id}</span>
-                    <span className="text-[10px] opacity-70">{total} cars</span>
+                    <span className="text-[10px] opacity-70">{total} cars &bull; {ph === 'NORTH_SOUTH' ? 'P1' : 'P2'}</span>
                   </button>
                 );
               })}
+            </div>
+
+            {/* Safe Phase Comparison Box */}
+            <div className="grid grid-cols-2 gap-3 p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-mono">
+              <div className={`p-2.5 rounded-lg border transition-all ${
+                selectedPhase === 'NORTH_SOUTH' && selectedState === 'GREEN'
+                  ? 'border-emerald-500/50 bg-emerald-950/30 text-emerald-300 ring-1 ring-emerald-500/30'
+                  : 'border-slate-800 bg-slate-900/40 text-slate-400'
+              }`}>
+                <div className="flex items-center justify-between font-bold">
+                  <span>Phase 1: NORTH / SOUTH</span>
+                  {selectedPhase === 'NORTH_SOUTH' && selectedState === 'GREEN' && (
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">ACTIVE GREEN</span>
+                  )}
+                </div>
+                <div className="text-[11px] mt-1 text-slate-300">
+                  Priority Score: <strong className="text-white">{nsScore}</strong> (N:{computePriority(selectedCounts.north, selectedWaits.north)} + S:{computePriority(selectedCounts.south, selectedWaits.south)})
+                </div>
+              </div>
+
+              <div className={`p-2.5 rounded-lg border transition-all ${
+                selectedPhase === 'EAST_WEST' && selectedState === 'GREEN'
+                  ? 'border-emerald-500/50 bg-emerald-950/30 text-emerald-300 ring-1 ring-emerald-500/30'
+                  : 'border-slate-800 bg-slate-900/40 text-slate-400'
+              }`}>
+                <div className="flex items-center justify-between font-bold">
+                  <span>Phase 2: EAST / WEST</span>
+                  {selectedPhase === 'EAST_WEST' && selectedState === 'GREEN' && (
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">ACTIVE GREEN</span>
+                  )}
+                </div>
+                <div className="text-[11px] mt-1 text-slate-300">
+                  Priority Score: <strong className="text-white">{ewScore}</strong> (E:{computePriority(selectedCounts.east, selectedWaits.east)} + W:{computePriority(selectedCounts.west, selectedWaits.west)})
+                </div>
+              </div>
             </div>
 
             {/* 4 Directional Sliders for Selected Junction */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
               {['north', 'south', 'east', 'west'].map((dir) => {
                 const count = selectedCounts[dir];
-                const tier = getTierDetails(count);
-                const isCurrentGreen = isMonitoring && activeSignals[selectedJunction] === dir.toUpperCase() && count > 0;
+                const wait = selectedWaits[dir];
+                const priority = computePriority(count, wait);
+                const congestion = count > 50 ? 'Severe' : count > 20 ? 'Moderate' : 'Light';
+                const isDirGreen = isMonitoring && 
+                  selectedState === 'GREEN' && 
+                  SAFE_PHASES[selectedPhase].greenDirections.includes(dir);
+                const isDirYellow = isMonitoring && 
+                  selectedState === 'YELLOW' && 
+                  SAFE_PHASES[selectedPhase].greenDirections.includes(dir);
 
                 return (
                   <div
                     key={dir}
                     className={`p-3.5 rounded-xl border transition-all ${
-                      isCurrentGreen && isMonitoring
+                      isDirGreen
                         ? 'bg-emerald-950/20 border-emerald-500/50 ring-1 ring-emerald-500/30'
+                        : isDirYellow
+                        ? 'bg-yellow-950/20 border-yellow-500/50 ring-1 ring-yellow-500/30'
                         : 'bg-slate-950/70 border-slate-800'
                     }`}
                   >
@@ -934,19 +1071,25 @@ export default function App() {
                       <div className="flex items-center gap-1.5">
                         <Compass className="w-3.5 h-3.5 text-slate-400" />
                         <span className="font-bold text-white text-sm uppercase">{dir} Approach</span>
-                        {isCurrentGreen && isMonitoring && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/30 text-emerald-300 font-bold font-mono">
-                            ACTIVE GREEN
-                          </span>
-                        )}
                       </div>
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${tier.badge}`}>
-                        {tier.name} ({tier.greenTime}s)
-                      </span>
+                      
+                      {isDirGreen ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/30 text-emerald-300 font-bold font-mono">
+                          GREEN ({selectedTimer}s)
+                        </span>
+                      ) : isDirYellow ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-500/30 text-yellow-300 font-bold font-mono">
+                          YELLOW ({selectedTimer}s)
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-bold font-mono">
+                          RED (STOPPED)
+                        </span>
+                      )}
                     </div>
 
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-xs font-mono">
+                    <div className="space-y-2 text-xs font-mono">
+                      <div className="flex justify-between">
                         <span className="text-slate-400">Cars Waiting:</span>
                         <span className="text-white font-bold">{count} vehicles</span>
                       </div>
@@ -958,6 +1101,18 @@ export default function App() {
                         onChange={(e) => handleDirectionChange(selectedJunction, dir, e.target.value)}
                         className="w-full accent-cyan-400 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer"
                       />
+
+                      <div className="flex justify-between pt-1 border-t border-slate-800/60 text-[11px]">
+                        <span className="text-slate-400">Wait Time:</span>
+                        <span className={wait >= 60 ? 'text-rose-400 font-bold animate-pulse' : 'text-slate-300'}>
+                          {wait}s {wait >= 60 && '(STARVED!)'}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-slate-400">Priority Score:</span>
+                        <span className="text-cyan-300 font-bold">{priority} (Congestion: {congestion})</span>
+                      </div>
                     </div>
                   </div>
                 );
@@ -970,11 +1125,11 @@ export default function App() {
             <div className="space-y-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2 border-b border-slate-800 pb-3">
                 <Siren className="w-4 h-4 text-rose-400" />
-                Emergency Green Corridor
+                Emergency Preemption Mode
               </h3>
 
               <p className="text-xs text-slate-400">
-                Spawns an ambulance. The Node.js backend calculates the exact directional green lights along the route to <strong>City Hospital</strong>.
+                Spawns an ambulance. The safe controller immediately requests the required phase, transitions safely through <strong>Yellow &amp; All-Red clearance</strong>, and clears the route to City Hospital.
               </p>
 
               <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
@@ -1013,16 +1168,16 @@ export default function App() {
           </section>
         </div>
 
-        {/* SUBMISSION & 16-SIGNAL MONITORING ENGINE */}
+        {/* SUBMISSION & REAL-TIME EXECUTION */}
         <section className="rounded-2xl bg-[#0b1329] border border-slate-800 p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                16-Signal Submission &amp; Real-Time Execution
+                Safe Adaptive Signal Execution Engine
               </h3>
               <p className="text-xs text-slate-400">
-                Submit all 16 approach counts to Node.js backend. Real-time signal cycling will control all 4 junctions.
+                Runs the real-time simulation enforcing opposing safe phases, starvation overrides, and deterministic clearance transitions.
               </p>
             </div>
 
@@ -1037,12 +1192,12 @@ export default function App() {
               {isMonitoring ? (
                 <>
                   <Pause className="w-4 h-4 fill-current" />
-                  <span>PAUSE LIVE MONITORING</span>
+                  <span>PAUSE LIVE SIMULATION</span>
                 </>
               ) : (
                 <>
                   <Play className="w-4 h-4 fill-current" />
-                  <span>SUBMIT &amp; START 16-SIGNAL MONITORING</span>
+                  <span>START SAFE SIMULATION</span>
                 </>
               )}
             </button>
@@ -1052,9 +1207,9 @@ export default function App() {
           {isMonitoring && (
             <div className="pt-3 border-t border-slate-800 space-y-2">
               <span className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider block">
-                Backend Decision Log Feed:
+                Safe Phase Decision &amp; Clearance Log:
               </span>
-              <div className="space-y-1.5 max-h-28 overflow-y-auto font-mono text-xs">
+              <div className="space-y-1.5 max-h-32 overflow-y-auto font-mono text-xs">
                 {logs.map((log, index) => (
                   <div key={index} className="p-2 rounded bg-slate-950/80 border border-slate-800 text-slate-300">
                     {log}
@@ -1065,28 +1220,30 @@ export default function App() {
           )}
         </section>
 
-        {/* Viva Reference Summary */}
+        {/* Viva Reference Summary: Safe Phases & Clearance Rules */}
         <section className="rounded-xl bg-[#091122]/70 border border-slate-800 p-4 text-xs text-slate-300">
           <div className="flex items-center gap-2 font-bold text-white mb-2">
             <Award className="w-4 h-4 text-cyan-400" />
-            <span>Viva Summary: 16-Signal Architecture (4 Approaches x 4 Junctions)</span>
+            <span>Viva Summary: Safe Adaptive Traffic Signal Rules</span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
-            <div className="bg-slate-950/80 p-2 rounded border border-emerald-900/40 text-emerald-300">
-              <strong>Tier 1: Low (0-19)</strong>
-              <div>➔ 15s Green Light</div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-mono">
+            <div className="bg-slate-950/80 p-2.5 rounded border border-emerald-900/40 text-emerald-300">
+              <strong>1. Safe Phases Only</strong>
+              <div>Phase 1: North/South Green (EW Red)</div>
+              <div>Phase 2: East/West Green (NS Red)</div>
+              <div>❌ Never Conflicting Greens</div>
             </div>
-            <div className="bg-slate-950/80 p-2 rounded border border-cyan-900/40 text-cyan-300">
-              <strong>Tier 2: Med (20-50)</strong>
-              <div>➔ 25s Green Light</div>
+            <div className="bg-slate-950/80 p-2.5 rounded border border-yellow-900/40 text-yellow-300">
+              <strong>2. Deterministic Clearance</strong>
+              <div>GREEN ➔ YELLOW (3s)</div>
+              <div>➔ ALL RED (2s) ➔ NEW GREEN</div>
+              <div>🛡️ Zero Instant Collisions</div>
             </div>
-            <div className="bg-slate-950/80 p-2 rounded border border-amber-900/40 text-amber-300">
-              <strong>Tier 3: High (51-80)</strong>
-              <div>➔ 35s Green Light</div>
-            </div>
-            <div className="bg-slate-950/80 p-2 rounded border border-rose-900/40 text-rose-300">
-              <strong>Tier 4: V.High (&gt;80)</strong>
-              <div>➔ 45s Green Light</div>
+            <div className="bg-slate-950/80 p-2.5 rounded border border-cyan-900/40 text-cyan-300">
+              <strong>3. Starvation &amp; Priority</strong>
+              <div>Score = (Cars×1) + (Wait×0.5) + (Cong×2)</div>
+              <div>Wait &ge; 60s ➔ Immediate Priority</div>
+              <div>15s &le; Green Duration &le; 60s</div>
             </div>
           </div>
         </section>
@@ -1095,7 +1252,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-3 text-center text-xs text-slate-500 font-mono">
-        Total Cars in 16 Approaches: {totalNetworkCars} &bull; Backend: Node.js Express (:3000) &bull; Frontend: React Vite (:5173)
+        Total Cars in Grid: {totalNetworkCars} &bull; Backend: Node.js Express (:3000) &bull; Frontend: React Vite (:5173)
       </footer>
     </div>
   );
