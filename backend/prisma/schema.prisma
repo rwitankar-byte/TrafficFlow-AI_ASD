@@ -1,0 +1,127 @@
+generator client {
+  provider              = "prisma-client"
+  output                = "../src/generated/prisma"
+  runtime               = "nodejs"
+  moduleFormat          = "cjs"
+  generatedFileExtension = "cts"
+  importFileExtension   = "cts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Direction {
+  NORTH
+  SOUTH
+  EAST
+  WEST
+}
+
+enum TrafficTier {
+  LOW
+  MEDIUM
+  HIGH
+  VERY_HIGH
+}
+
+enum SignalState {
+  RED
+  YELLOW
+  GREEN
+}
+
+enum DispatchStatus {
+  ACTIVE
+  ARRIVED
+  CLEARED
+  CANCELLED
+}
+
+model Junction {
+  id                String              @id @default(cuid())
+  code              String              @unique
+  name              String
+  label             String
+  mapX              Int
+  mapY              Int
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  signals           Signal[]
+  trafficData       TrafficData[]
+  startedDispatches EmergencyDispatch[] @relation("DispatchStart")
+  currentDispatches EmergencyDispatch[] @relation("DispatchCurrent")
+}
+
+model TrafficData {
+  id           String      @id @default(cuid())
+  junctionId   String
+  direction    Direction
+  vehicleCount Int
+  trafficTier  TrafficTier?
+  capturedAt   DateTime    @default(now())
+  source       String?
+  junction     Junction    @relation(fields: [junctionId], references: [id], onDelete: Cascade)
+
+  @@index([junctionId])
+  @@index([capturedAt])
+  @@index([junctionId, capturedAt])
+}
+
+model Signal {
+  id               String       @id @default(cuid())
+  junctionId       String
+  direction        Direction
+  state            SignalState  @default(RED)
+  greenDurationSec Int?
+  activeSince      DateTime?
+  isEmergency      Boolean      @default(false)
+  updatedAt        DateTime     @updatedAt
+  junction         Junction     @relation(fields: [junctionId], references: [id], onDelete: Cascade)
+  logs             SignalLog[]
+
+  @@unique([junctionId, direction])
+  @@index([junctionId])
+}
+
+model SignalLog {
+  id            String       @id @default(cuid())
+  signalId      String
+  previousState SignalState?
+  nextState     SignalState
+  durationSec   Int?
+  reason        String?
+  occurredAt    DateTime     @default(now())
+  signal        Signal       @relation(fields: [signalId], references: [id], onDelete: Cascade)
+
+  @@index([signalId, occurredAt])
+  @@index([occurredAt])
+}
+
+model Hospital {
+  id         String              @id @default(cuid())
+  code       String              @unique
+  name       String
+  createdAt  DateTime            @default(now())
+  dispatches EmergencyDispatch[]
+}
+
+model EmergencyDispatch {
+  id                String         @id @default(cuid())
+  hospitalId        String
+  startJunctionId   String
+  currentJunctionId String?
+  vehicleType       String         @default("AMBULANCE")
+  route             Json
+  status            DispatchStatus @default(ACTIVE)
+  startedAt         DateTime       @default(now())
+  arrivedAt         DateTime?
+  clearedAt         DateTime?
+  hospital          Hospital       @relation(fields: [hospitalId], references: [id])
+  startJunction     Junction       @relation("DispatchStart", fields: [startJunctionId], references: [id])
+  currentJunction   Junction?      @relation("DispatchCurrent", fields: [currentJunctionId], references: [id])
+
+  @@index([status, startedAt])
+  @@index([startJunctionId])
+  @@index([currentJunctionId])
+}
