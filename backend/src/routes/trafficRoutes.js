@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getCurrentTraffic, getTrafficDecision } = require('../controllers/trafficController');
+const { getCurrentTraffic, getTrafficDecision } = require('../controllers/trafficController.js');
 
 // GET /api/traffic/current - get current traffic counts
 router.get('/current', getCurrentTraffic);
