@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Car, 
   Siren, 
@@ -13,9 +13,15 @@ import {
   Hospital as HospitalIcon,
   Server,
   Compass,
-  AlertTriangle,
-  ShieldCheck
+  ShieldCheck,
+  BarChart3,
+  RefreshCw,
+  AlertCircle,
+  Clock3,
+  Database,
+  Siren as SirenIcon
 } from 'lucide-react';
+import { ANALYTICS_DIRECTIONS, buildAnalyticsModel, buildHistorySeries } from './analytics.js';
 
 /**
  * ==============================================================================
@@ -41,6 +47,7 @@ import {
  */
 
 const API_BASE_URL = 'http://localhost:3000/api/traffic';
+const API_ROOT_URL = 'http://localhost:3000/api';
 
 // Map Coordinates & Junction Configuration
 const JUNCTIONS = {
@@ -147,6 +154,62 @@ function getActiveSegmentPath(ambulance) {
   return null;
 }
 
+const DENSITY_COLORS = { LOW: '#10b981', MEDIUM: '#06b6d4', HIGH: '#f59e0b', VERY_HIGH: '#f43f5e' };
+const DIRECTION_COLORS = { NORTH: '#22d3ee', SOUTH: '#34d399', EAST: '#fbbf24', WEST: '#fb7185' };
+
+function formatMetric(value) {
+  return new Intl.NumberFormat('en-US').format(Number(value) || 0);
+}
+
+function AnalyticsDashboard({ state, model, history, onRefresh }) {
+  const historyMax = Math.max(...history.map((point) => point.vehicles), 1);
+  const historyPoints = history.map((point, index) => ({
+    ...point,
+    x: history.length === 1 ? 400 : 20 + (index / (history.length - 1)) * 760,
+    y: 190 - (point.vehicles / historyMax) * 150
+  }));
+
+  return (
+    <section className="rounded-2xl bg-[#0b1329] border border-slate-800 p-5 space-y-5 shadow-2xl" aria-labelledby="analytics-heading">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+        <div>
+          <h2 id="analytics-heading" className="text-sm font-bold text-white flex items-center gap-2"><BarChart3 className="w-4 h-4 text-cyan-400" />Traffic Analytics Dashboard</h2>
+          <p className="text-xs text-slate-400 mt-1">Historical database records from the traffic decision engine.</p>
+        </div>
+        <button type="button" onClick={onRefresh} disabled={state.status === 'loading'} className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-slate-700 bg-slate-950/70 text-xs font-mono text-slate-300 hover:text-white hover:border-cyan-500/60 disabled:opacity-50 disabled:cursor-wait">
+          <RefreshCw className={`w-3.5 h-3.5 ${state.status === 'loading' ? 'animate-spin' : ''}`} />Refresh analytics
+        </button>
+      </div>
+      {state.status === 'loading' && <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-8 text-center text-sm text-slate-400">Loading analytics from PostgreSQL…</div>}
+      {state.status === 'error' && <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-5 flex items-start gap-3 text-sm text-rose-200" role="alert"><AlertCircle className="w-5 h-5 text-rose-400 shrink-0" /><div><p className="font-bold">Analytics unavailable</p><p className="text-xs text-rose-300/80 mt-1">{state.error}</p></div></div>}
+      {state.status === 'success' && model && (
+        <>
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+            {[
+              ['Traffic records', model.summary.trafficRecords, Database, 'text-cyan-400', 'border-cyan-500/30'],
+              ['Signal decisions', model.summary.signalDecisions, Activity, 'text-emerald-400', 'border-emerald-500/30'],
+              ['Emergency dispatches', model.summary.emergencyDispatches, SirenIcon, 'text-rose-400', 'border-rose-500/30'],
+              ['Vehicles recorded', model.summary.totalVehicles, Car, 'text-amber-400', 'border-amber-500/30']
+            ].map(([label, value, Icon, color, accent]) => <div key={label} className={`rounded-xl border ${accent} bg-slate-950/60 p-4`}><Icon className={`w-4 h-4 ${color} mb-3`} /><div className="text-2xl font-black text-white tracking-tight">{formatMetric(value)}</div><div className="text-[11px] text-slate-400 mt-1">{label}</div></div>)}
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-4">
+              <div><h3 className="text-sm font-bold text-white">Traffic density distribution</h3><p className="text-[11px] text-slate-500 mt-1">Actual stored traffic snapshot tiers</p></div>
+              {model.density.map(({ tier, records, percentage }) => <div key={tier}><div className="flex items-center justify-between text-[11px] font-mono mb-1.5"><span className="text-slate-300">{tier.replace('_', ' ')}</span><span className="text-slate-500">{formatMetric(records)} · {percentage.toFixed(1)}%</span></div><div className="h-2 rounded-full bg-slate-800 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${Math.min(100, percentage)}%`, backgroundColor: DENSITY_COLORS[tier] }} /></div></div>)}
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-4">
+              <div><h3 className="text-sm font-bold text-white">Junction traffic volume</h3><p className="text-[11px] text-slate-500 mt-1">Vehicle totals by approach and junction</p></div>
+              <div className="grid grid-cols-4 gap-3 items-end min-h-44">{model.junctions.map((junction) => { const maxVolume = Math.max(...model.junctions.flatMap((item) => ANALYTICS_DIRECTIONS.map((direction) => item.directions[direction].volume)), 1); return <div key={junction.code} className="min-w-0"><div className="h-32 flex items-end justify-center gap-1 border-b border-slate-800">{ANALYTICS_DIRECTIONS.map((direction) => { const volume = junction.directions[direction].volume; return <div key={direction} className="flex-1 max-w-4 rounded-t-sm" title={`${junction.code} ${direction}: ${formatMetric(volume)} vehicles`} style={{ height: `${(volume / maxVolume) * 100}%`, minHeight: volume ? '3px' : '0', backgroundColor: DIRECTION_COLORS[direction] }} />; })}</div><div className="text-center mt-2 text-xs font-mono font-bold text-cyan-300">{junction.code}</div><div className="text-center text-[9px] text-slate-500 truncate" title={junction.name}>{junction.name}</div></div>; })}</div>
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-[10px] font-mono text-slate-500">{ANALYTICS_DIRECTIONS.map((direction) => <span key={direction} className="inline-flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm" style={{ backgroundColor: DIRECTION_COLORS[direction] }} />{direction}</span>)}</div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-4"><div className="flex items-center gap-2"><Clock3 className="w-4 h-4 text-cyan-400" /><div><h3 className="text-sm font-bold text-white">Traffic history</h3><p className="text-[11px] text-slate-500 mt-1">Network vehicles summed from stored snapshots</p></div></div>{history.length < 2 ? <div className="rounded-lg border border-dashed border-slate-700 p-8 text-center text-xs text-slate-500">Not enough timestamped traffic records to draw a trend yet.</div> : <div className="overflow-x-auto"><svg viewBox="0 0 800 220" className="w-full min-w-[620px] h-52" role="img" aria-label="Traffic vehicles over time"><line x1="20" y1="190" x2="780" y2="190" stroke="#334155" /><line x1="20" y1="40" x2="20" y2="190" stroke="#334155" /><polyline fill="none" stroke="#22d3ee" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={historyPoints.map(({ x, y }) => `${x},${y}`).join(' ')} />{historyPoints.map(({ timestamp, vehicles, x, y }) => <circle key={timestamp} cx={x} cy={y} r="4" fill="#0b1329" stroke="#22d3ee" strokeWidth="2"><title>{new Date(timestamp).toLocaleString()} · {formatMetric(vehicles)} vehicles</title></circle>)}<text x="20" y="210" fill="#64748b" fontSize="10">{new Date(history[0].timestamp).toLocaleDateString()}</text><text x="780" y="210" textAnchor="end" fill="#64748b" fontSize="10">{new Date(history[history.length - 1].timestamp).toLocaleDateString()}</text><text x="12" y="45" textAnchor="end" fill="#64748b" fontSize="10">{formatMetric(historyMax)}</text></svg></div>}</div>
+        </>
+      )}
+    </section>
+  );
+}
+
 /**
  * Computes priority score for a direction:
  * Priority = (vehicleCount * 1.0) + (waitingTime * 0.5) + (congestionLevel * 2.0)
@@ -207,6 +270,9 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [backendStatus, setBackendStatus] = useState('connecting');
   const [backendData, setBackendData] = useState(null);
+  const [junctionMetadata, setJunctionMetadata] = useState([]);
+  const [analyticsState, setAnalyticsState] = useState({ status: 'loading', analytics: null, history: [], error: null });
+  const [analyticsRefresh, setAnalyticsRefresh] = useState(0);
 
   // Refs for real-time simulation interval to avoid stale closures
   const networkVehiclesRef = useRef(networkVehicles);
@@ -229,6 +295,50 @@ export default function App() {
 
   const ambulanceRef = useRef(ambulance);
   ambulanceRef.current = ambulance;
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadJunctionMetadata() {
+      try {
+        const response = await fetch(`${API_ROOT_URL}/junctions`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (isMounted) setJunctionMetadata(Array.isArray(payload.junctions) ? payload.junctions : []);
+      } catch (error) {
+        console.warn('Junction metadata unavailable:', error.message);
+      }
+    }
+    loadJunctionMetadata();
+    return () => { isMounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadAnalytics() {
+      setAnalyticsState((current) => ({ ...current, status: 'loading', error: null }));
+      try {
+        const [analyticsResponse, historyResponse] = await Promise.all([
+          fetch(`${API_ROOT_URL}/analytics`),
+          fetch(`${API_ROOT_URL}/traffic/history?limit=500`)
+        ]);
+        if (!analyticsResponse.ok) throw new Error(`Analytics request failed (HTTP ${analyticsResponse.status})`);
+        if (!historyResponse.ok) throw new Error(`Traffic history request failed (HTTP ${historyResponse.status})`);
+        const [analyticsPayload, historyPayload] = await Promise.all([analyticsResponse.json(), historyResponse.json()]);
+        if (!analyticsPayload?.analytics || !Array.isArray(historyPayload?.records)) throw new Error('Backend returned an unexpected analytics response');
+        if (isMounted) setAnalyticsState({ status: 'success', analytics: analyticsPayload.analytics, history: historyPayload.records, error: null });
+      } catch (error) {
+        if (isMounted) setAnalyticsState({ status: 'error', analytics: null, history: [], error: error.message });
+      }
+    }
+    loadAnalytics();
+    return () => { isMounted = false; };
+  }, [analyticsRefresh]);
+
+  const analyticsModel = useMemo(
+    () => analyticsState.analytics ? buildAnalyticsModel(analyticsState.analytics, junctionMetadata) : null,
+    [analyticsState.analytics, junctionMetadata]
+  );
+  const analyticsHistory = useMemo(() => buildHistorySeries(analyticsState.history), [analyticsState.history]);
 
   // ============================================================================
   // SYNC WITH NODE.JS BACKEND (SETUP MODE)
@@ -1219,6 +1329,13 @@ export default function App() {
             </div>
           )}
         </section>
+
+        <AnalyticsDashboard
+          state={analyticsState}
+          model={analyticsModel}
+          history={analyticsHistory}
+          onRefresh={() => setAnalyticsRefresh((value) => value + 1)}
+        />
 
         {/* Viva Reference Summary: Safe Phases & Clearance Rules */}
         <section className="rounded-xl bg-[#091122]/70 border border-slate-800 p-4 text-xs text-slate-300">
