@@ -29,36 +29,41 @@ const defaultNetworkTraffic = {
  * GET /api/traffic/current
  */
 const getCurrentTraffic = async (req, res) => {
-  const prisma = getPrisma();
-
-  const junctions = await prisma.junction.findMany({
-    orderBy: { code: 'asc' },
-    include: { signals: true }
-  });
-
   const defaultVehicles = structuredClone(defaultNetworkTraffic);
+  let junctions = [];
 
-  const latest = await prisma.trafficData.findMany({
-    orderBy: { capturedAt: 'desc' },
-    take: 64
-  });
+  try {
+    const prisma = getPrisma();
 
-  const seen = new Set();
+    junctions = await prisma.junction.findMany({
+      orderBy: { code: 'asc' },
+      include: { signals: true }
+    });
 
-  for (const row of latest) {
-    const direction = row.direction.toLowerCase();
-    const key = `${row.junctionId}:${direction}`;
+    const latest = await prisma.trafficData.findMany({
+      orderBy: { capturedAt: 'desc' },
+      take: 64
+    });
 
-    if (seen.has(key)) continue;
+    const seen = new Set();
 
-    const junction = junctions.find(
-      (item) => item.id === row.junctionId
-    );
+    for (const row of latest) {
+      const direction = row.direction.toLowerCase();
+      const key = `${row.junctionId}:${direction}`;
 
-    if (junction) {
-      defaultVehicles[junction.code][direction] = row.vehicleCount;
-      seen.add(key);
+      if (seen.has(key)) continue;
+
+      const junction = junctions.find(
+        (item) => item.id === row.junctionId
+      );
+
+      if (junction) {
+        defaultVehicles[junction.code][direction] = row.vehicleCount;
+        seen.add(key);
+      }
     }
+  } catch (dbErr) {
+    // Database offline or not configured: proceed gracefully with in-memory defaults
   }
 
   res.status(200).json({
@@ -143,16 +148,20 @@ const getTrafficDecision = async (req, res) => {
     rotatingJunction: payload.rotatingJunction || null
   });
 
-  // Persist traffic and emergency data
-  await persistTrafficDecision({
-    networkVehicles,
-    decision,
-    source: 'api'
-  });
+  // Persist traffic and emergency data (if database is connected)
+  try {
+    await persistTrafficDecision({
+      networkVehicles,
+      decision,
+      source: 'api'
+    });
 
-  await persistEmergencyDispatch({
-    ambulance: payload.ambulance || null
-  });
+    await persistEmergencyDispatch({
+      ambulance: payload.ambulance || null
+    });
+  } catch (dbErr) {
+    // Database persistence optional - continues gracefully
+  }
 
   return res.status(200).json({
     ...decision,
