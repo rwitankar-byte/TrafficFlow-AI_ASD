@@ -9,8 +9,8 @@ import {
   Activity
 } from 'lucide-react';
 
-import { API_BASE_URL } from './sim/config.js';
 import { useSimulation } from './sim/useSimulation.js';
+import { requestTrafficDecision } from './api/trafficApi.js';
 
 import { JunctionMap } from './components/JunctionMap.jsx';
 import { ControlPanel } from './components/ControlPanel.jsx';
@@ -22,24 +22,6 @@ import { AmbulancePanel } from './components/AmbulancePanel.jsx';
 import { ScenarioBar } from './components/ScenarioBar.jsx';
 import { SignalConfigPanel } from './components/SignalConfigPanel.jsx';
 import { CompareView } from './components/CompareView.jsx';
-
-/**
- * Call Backend Decision API (/api/traffic/decision)
- */
-async function callBackendDecision(payload) {
-  try {
-    const res = await fetch(`${API_BASE_URL}/decision`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (err) {
-    console.warn('Backend API unavailable on port 3000:', err.message);
-    return null;
-  }
-}
 
 export default function App() {
   const {
@@ -93,22 +75,25 @@ export default function App() {
 
     let isMounted = true;
     async function syncBackend() {
-      const data = await callBackendDecision({
-        networkVehicles: state.vehicles,
-        ambulance: primaryAmb ? {
-          junction: primaryAmb.junction,
-          currentJunction: primaryAmb.currentJunction || primaryAmb.junction,
-          progress: primaryAmb.progress,
-          hospital: primaryAmb.hospital || primaryAmb.targetHospital || 'HOSPITAL',
-          path: primaryAmb.path
-        } : null,
-        activeSignals: state.activePhases
-      });
+      try {
+        const data = await requestTrafficDecision({
+          networkVehicles: state.vehicles,
+          ambulance: primaryAmb ? {
+            junction: primaryAmb.junction,
+            currentJunction: primaryAmb.currentJunction || primaryAmb.junction,
+            progress: primaryAmb.progress,
+            hospital: primaryAmb.hospital || primaryAmb.targetHospital || 'HOSPITAL',
+            path: primaryAmb.path
+          } : null,
+          activeSignals: state.activePhases
+        });
 
-      if (isMounted) {
-        if (data && (data.status === 'success' || data.junctions)) {
+        if (isMounted && (data.status === 'success' || data.junctions)) {
           setBackendStatus('connected');
-        } else {
+        }
+      } catch (error) {
+        if (isMounted) {
+          console.warn('Backend API unavailable:', error.message);
           setBackendStatus('offline');
         }
       }
