@@ -9,6 +9,7 @@ try {
 }
 
 const trafficRoutes = require('../backend/src/routes/trafficRoutes');
+const databaseRoutes = require('../backend/src/routes/databaseRoutes');
 
 const app = express();
 
@@ -31,5 +32,6 @@ app.get(['/', '/api'], (req, res) => {
 // Support both /api/traffic and direct /traffic mounts for Vercel routing
 app.use('/api/traffic', trafficRoutes);
 app.use('/traffic', trafficRoutes);
+app.use('/api', databaseRoutes);
 
 module.exports = app;
