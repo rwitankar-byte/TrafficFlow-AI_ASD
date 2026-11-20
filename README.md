@@ -24,7 +24,7 @@
 - **⏳ Anti-Starvation Protection**: Automatically overrides and serves directions that have waited past the maximum wait threshold (60s).
 - **📊 Adaptive Green Durations**: Dynamically clamps green time between 15s (light traffic) and 60s (heavy traffic).
 - **🗺️ Interactive 16-Signal SVG Grid**: Visual simulation with live vehicle counters, manual traffic adjustments, preset scenarios, and animated vehicle routing.
-- **⚡ Lightweight & Database-Free**: Pure in-memory calculation logic with zero database or ORM dependencies.
+- **🗄️ Optional PostgreSQL Persistence**: Prisma ORM stores junctions, signals, traffic snapshots, signal history, emergency dispatches, and analytics when `DATABASE_URL` is configured; the simulation still works with in-memory defaults when it is absent.
 
 ---
 
@@ -59,6 +59,23 @@ Run the automated test suite covering all 9 safety rules, timing clamping, zero-
 ```bash
 npm test --prefix backend
 ```
+
+## 🗄️ Database Setup
+
+The backend supports PostgreSQL through Prisma ORM 7.10.0. Copy the template and set a local or hosted PostgreSQL connection string without committing credentials:
+
+```bash
+cd backend
+cp .env.example .env
+npm install
+npm run prisma:generate
+npx prisma migrate deploy
+npm run prisma:seed
+```
+
+The database contains junctions, sixteen current signals, traffic snapshots, signal transition logs, City Hospital, and emergency dispatch records. Database-backed reads are available at `/api/junctions`, `/api/traffic/history`, `/api/signals/current`, `/api/signals/history`, `/api/emergency/history`, and `/api/analytics`.
+
+If `DATABASE_URL` is not configured, the traffic decision API continues to serve the in-memory simulation and skips persistence.
 
 ---
 
