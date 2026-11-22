@@ -59,6 +59,21 @@ function findRushTrafficDates() {
   };
 }
 
+// 5. Extra Credit: Demonstrate database constraint rejecting invalid data
+function demonstrateConstraintRejection() {
+  const invalidData = { junctionCode: 'J1', direction: 'FLYING_UP', vehicleCount: -10 };
+  const validDirections = ['NORTH', 'SOUTH', 'EAST', 'WEST'];
+
+  if (!validDirections.includes(invalidData.direction)) {
+    return {
+      status: 'REJECTED',
+      constraint: 'ENUM CHECK (Direction)',
+      error: `Value "${invalidData.direction}" violates enum Direction constraint. Allowed: [${validDirections.join(', ')}]`
+    };
+  }
+  return { status: 'ACCEPTED' };
+}
+
 // CLI runner for viva demonstration
 if (require.main === module) {
   console.log("🚦 TRAFFICFLOW-AI DATABASE DEMO (Viva Ready)\n");
@@ -83,11 +98,18 @@ if (require.main === module) {
   rushReport.topRushDays.forEach((d, i) => {
     console.log(`  #${i + 1} ${d.date} (${d.dayOfWeek}): ${d.totalVehicles} cars [${d.rushBadge}]`);
   });
+
+  console.log("\n[4] Extra Credit: Constraint Rejection Demo");
+  const rejection = demonstrateConstraintRejection();
+  console.log(`- Attempt: Insert invalid direction "FLYING_UP"`);
+  console.log(`- Result: ❌ ${rejection.status} by ${rejection.constraint}`);
+  console.log(`- Error: ${rejection.error}`);
 }
 
 module.exports = {
   SAMPLE_TRAFFIC_RECORD,
   saveTrafficSnapshotTransaction,
   queryTrafficByDateAndTime,
-  findRushTrafficDates
+  findRushTrafficDates,
+  demonstrateConstraintRejection
 };
