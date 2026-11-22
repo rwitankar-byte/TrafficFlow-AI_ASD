@@ -1,42 +1,17 @@
-# 🗄️ TrafficFlow-AI Database Hub
+# 🗄️ TrafficFlow-AI Database
 
-All database configurations, schemas, sample records, and query operations for the **TrafficFlow-AI** project are consolidated here.
+All database files, schema definitions, sample data, and analytical queries are kept in this folder.
 
----
+## Files
+- **`trafficDatabase.js`**: Runnable script demonstrating the sample data, ACID transaction, and top 2 queries. Run with `node database/trafficDatabase.js`.
+- **`schema.prisma`**: PostgreSQL relational schema (`Junction`, `Signal`, `TrafficData`, `SignalLog`, `Hospital`, `EmergencyDispatch`).
+- **`traffic_history.json`**: Pre-seeded dataset with 7 days of traffic logs across 4 junctions.
+- **`seed.js`**: Script to seed the 4 physical junctions and signal heads into PostgreSQL.
 
-## 📁 Files in this Directory
-
-| File | Description |
-| :--- | :--- |
-| **`schema.prisma`** | The complete PostgreSQL relational database schema with all models (`Junction`, `Signal`, `TrafficData`, `SignalLog`, `Hospital`, `EmergencyDispatch`). |
-| **`trafficDatabase.js`** | Standalone runnable script containing the **Data Schema**, **Sample Data Record**, **ACID Transaction**, and **Top 2 Frequent Queries**. Run with `node database/trafficDatabase.js`. |
-| **`traffic_history.json`** | Pre-seeded historical traffic database spanning 7 days (morning rush, evening peak, normal flow, and weekend off-peak). |
-| **`seed.js`** | Seeding script to populate physical junctions (J1..J4), initial 16 signal heads, and City Hospital. |
-
----
-
-## 🎯 Viva & Technical Reference
-
-### 1. Database Choice & Type
-- **Name:** PostgreSQL (Relational Database / RDBMS) with Prisma ORM.
-- **Why Relational?** Traffic network data is **strictly structured and relational**:
-  - `Junction` (1) &rarr; `Signal` (Many)
-  - `Junction` (1) &rarr; `TrafficData` (Many)
-  - `Signal` (1) &rarr; `SignalLog` (Many)
-  - Foreign keys ensure integrity across physical intersections.
-
-### 2. ACID Transactions & Consistency
-- **Strong Consistency Required:** When an ambulance requests priority, conflicting green signals must change to RED atomically and the clearance log must be recorded together.
-- Implemented via `prismaClient.$transaction(...)` to guarantee that no conflicting signal state can ever be partially committed.
-
-### 3. Frequent Queries
-1. **Date & Time Traffic Query:** Filter vehicle volume by specific date and hour (`queryTrafficByDateAndTime`).
-2. **Rush Traffic Date Ranking:** Aggregate vehicle counts by date to automatically identify which date had rush hour traffic (`findRushTrafficDates`).
-
----
-
-## ⚡ Quick Test
-Run the standalone database script:
-```bash
-node database/trafficDatabase.js
-```
+## Viva Quick Summary
+1. **Database Type:** Relational (PostgreSQL with Prisma ORM).
+2. **Why Relational:** Highly structured network data (`Junction` 1-to-many `Signal`, `Junction` 1-to-many `TrafficData`).
+3. **Consistency:** Strong consistency (ACID transactions) ensures conflicting signals safely switch to RED when an emergency vehicle is dispatched.
+4. **Main Queries:**
+   - Query 1: Filter vehicle counts by specific date and hour (`queryTrafficByDateAndTime`).
+   - Query 2: Identify and rank dates with rush traffic (`findRushTrafficDates`).
