@@ -1,4 +1,5 @@
-const { getPrisma } = require('../db/client.js');
+const { getPrisma, isPostgresConfigured } = require('../db/client.js');
+const { beginnerDb } = require('../db/beginnerDb.js');
 
 const directions = ['north', 'south', 'east', 'west'];
 const junctionCodes = ['J1', 'J2', 'J3', 'J4'];
@@ -17,8 +18,15 @@ function routeFor(startJunction) {
   return [startJunction, 'HOSPITAL'];
 }
 
-async function persistTrafficDecision({ networkVehicles, decision, source = 'api', prismaClient = getPrisma() }) {
+async function persistTrafficDecision({ networkVehicles, decision, source = 'api' }) {
+  // Always update the beginner-friendly in-memory / local database
+  beginnerDb.recordTrafficSnapshot(networkVehicles, source);
+
+  // If PostgreSQL is configured, also persist to PostgreSQL
+  if (!isPostgresConfigured()) return;
+
   const capturedAt = new Date();
+  const prismaClient = getPrisma();
   return prismaClient.$transaction(async (tx) => {
     const junctions = await tx.junction.findMany({ where: { code: { in: junctionCodes } } });
     const byCode = new Map(junctions.map((junction) => [junction.code, junction]));
@@ -56,7 +64,14 @@ async function persistTrafficDecision({ networkVehicles, decision, source = 'api
   });
 }
 
-async function persistEmergencyDispatch({ ambulance, prismaClient = getPrisma() }) {
+async function persistEmergencyDispatch({ ambulance }) {
+  // Always update beginner-friendly database
+  beginnerDb.recordEmergencyDispatch(ambulance);
+
+  // If PostgreSQL is configured, also persist to PostgreSQL
+  if (!isPostgresConfigured()) return null;
+
+  const prismaClient = getPrisma();
   const hospital = await prismaClient.hospital.findUnique({ where: { code: 'HOSPITAL' } });
   if (!hospital) throw new Error('Missing seeded hospital: HOSPITAL');
   const active = await prismaClient.emergencyDispatch.findFirst({ where: { status: { in: ['ACTIVE', 'ARRIVED'] } }, orderBy: { startedAt: 'desc' } });

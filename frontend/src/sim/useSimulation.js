@@ -34,7 +34,7 @@ import { validateScenario } from './scenarios.js';
  * - Ambulance preemption spawning and clearing
  */
 export function useSimulation(initialConfig = {}, initialSeed = 42) {
-  const mergedConfig = { phasingMode: 'SINGLE', ...initialConfig };
+  const mergedConfig = { phasingMode: 'PAIR', ...initialConfig };
   const [seed, setSeed] = useState(initialSeed);
   const [signalMode, setSignalModeState] = useState(() => normalizeMode(mergedConfig.phasingMode));
   const [simState, setSimState] = useState(() => createInitialState(mergedConfig, initialSeed));

@@ -59,9 +59,9 @@ export function JunctionMap({
           </h2>
           {!compact && (
             <p className="text-xs text-slate-400 mt-0.5">
-              {simState.phasingMode === 'PAIR'
-                ? 'Phase 1 = North/South Green • Phase 2 = East/West Green • Yellow (3s) & All-Red (2s) Clearance'
-                : 'One Approach At A Time • Dedicated Single Green (N ➔ E ➔ S ➔ W) • Yellow (3s) & All-Red (2s) Clearance'}
+              {simState.phasingMode === 'SINGLE'
+                ? 'One Approach At A Time • Dedicated Single Green (N ➔ E ➔ S ➔ W) • Yellow (3s) & All-Red (2s) Clearance'
+                : '2 Signals at Single Time • Phase 1 = North/South Green • Phase 2 = East/West Green • Yellow (3s) & All-Red (2s) Clearance'}
             </p>
           )}
         </div>

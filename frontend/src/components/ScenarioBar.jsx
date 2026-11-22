@@ -76,29 +76,29 @@ export function ScenarioBar({
           <div className="flex rounded-xl bg-slate-950 border border-slate-800 p-1 gap-1" role="group" aria-label="Signal Mode">
             <button
               type="button"
-              onClick={() => onSwitchSignalMode && onSwitchSignalMode('SINGLE')}
+              onClick={() => onSwitchSignalMode && onSwitchSignalMode('PAIR')}
               className={`px-2.5 py-1 text-xs font-mono font-bold rounded-lg transition-colors ${
-                (signalMode === 'SINGLE' || signalMode === '4_PHASE' || !signalMode)
-                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                (signalMode === 'PAIR' || signalMode === '2_PHASE' || !signalMode)
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
-              aria-pressed={signalMode === 'SINGLE' || signalMode === '4_PHASE' || !signalMode}
-              title="One approach at a time (Dedicated Single Green)"
+              aria-pressed={signalMode === 'PAIR' || signalMode === '2_PHASE' || !signalMode}
+              title="2 Signals at a Single Time (Opposing pairs: North+South or East+West together)"
             >
-              One approach at a time
+              2 Signals at Single Time (PAIR)
             </button>
             <button
               type="button"
-              onClick={() => onSwitchSignalMode && onSwitchSignalMode('PAIR')}
+              onClick={() => onSwitchSignalMode && onSwitchSignalMode('SINGLE')}
               className={`px-2.5 py-1 text-xs font-mono font-bold rounded-lg transition-colors ${
-                (signalMode === 'PAIR' || signalMode === '2_PHASE')
-                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                (signalMode === 'SINGLE' || signalMode === '4_PHASE')
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
-              aria-pressed={signalMode === 'PAIR' || signalMode === '2_PHASE'}
-              title="Opposing pair (2-Phase N/S and E/W)"
+              aria-pressed={signalMode === 'SINGLE' || signalMode === '4_PHASE'}
+              title="1 approach at a time (Dedicated Single Green: N -> E -> S -> W)"
             >
-              Opposing pair (2-phase)
+              1 Signal at a Time (SINGLE)
             </button>
           </div>
 

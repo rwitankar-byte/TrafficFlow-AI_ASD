@@ -21,6 +21,7 @@ import { ComparisonPanel } from './components/ComparisonPanel.jsx';
 import { AmbulancePanel } from './components/AmbulancePanel.jsx';
 import { ScenarioBar } from './components/ScenarioBar.jsx';
 import { SignalConfigPanel } from './components/SignalConfigPanel.jsx';
+import { TrafficDatabasePanel } from './components/TrafficDatabasePanel.jsx';
 import { CompareView } from './components/CompareView.jsx';
 
 export default function App() {
@@ -60,8 +61,8 @@ export default function App() {
   const [backendStatus, setBackendStatus] = useState('connecting');
 
   const togglePhasingMode = () => {
-    const currentMode = state.phasingMode || signalMode || 'SINGLE';
-    const nextMode = currentMode === 'SINGLE' || currentMode === '4_PHASE' ? 'PAIR' : 'SINGLE';
+    const currentMode = state.phasingMode || signalMode || 'PAIR';
+    const nextMode = currentMode === 'PAIR' || currentMode === '2_PHASE' ? 'SINGLE' : 'PAIR';
     switchSignalMode(nextMode);
   };
 
@@ -114,12 +115,12 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
-                Safe Adaptive Traffic System <span className="text-cyan-400 font-mono text-sm">({state.phasingMode === 'PAIR' ? 'Opposing Pairs (2-Phase)' : 'One Approach At A Time'})</span>
+                Safe Adaptive Traffic System <span className="text-cyan-400 font-mono text-sm">({state.phasingMode === 'SINGLE' ? '1 Signal at a Time' : '2 Signals at Single Time (N/S & E/W)'})</span>
               </h1>
               <p className="text-[11px] text-slate-400">
-                {state.phasingMode === 'PAIR'
-                  ? 'Phase 1 (North/South) • Phase 2 (East/West) • Deterministic Clearance'
-                  : 'Phase North • Phase East • Phase South • Phase West • Conflict-Free Clearance'}
+                {state.phasingMode === 'SINGLE'
+                  ? 'Single Signal Mode • One approach active at a time • Safe Clearance'
+                  : '2 Signals at a Single Time Active • Opposing Pairs (North+South or East+West) • Deterministic Clearance'}
               </p>
             </div>
           </div>
@@ -280,6 +281,9 @@ export default function App() {
           onUpdateSignalConfig={updateSignalConfig}
           onResetSignalConfig={resetSignalConfig}
         />
+
+        {/* Traffic Database & Date/Time Rush Hour Analyzer */}
+        <TrafficDatabasePanel />
 
         {/* Live Decision Feed (#12) */}
         <DecisionLog logs={state.logs} isRunning={isRunning} onClearLogs={clearLogs} />
